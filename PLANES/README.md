@@ -24,5 +24,5 @@ Si el evaluador BLOQUEA, se corrige con `/ejecutar <N> T#` y se vuelve a `/evalu
 Las definiciones están en `.claude/agents/` y los comandos en `.claude/commands/`.
 
 ## Etapas
-- **Etapa 0:** Motor de reglas `BACKEND/reglas_ingenieria.py` (el CLAUDE.md lo da por existente, pero no está en el repositorio).
+- **Etapa 0:** Motor de reglas `BACKEND/reglas_ingenieria.py` (el archivo existe: llegó sin trackear y se commiteó tal cual en `d8e332c` como base); la etapa consiste en auditarlo, probarlo con pytest y corregirlo. Plan: [etapa-0.md](etapa-0.md).
 - **Etapa 1–4:** según CLAUDE.md §7.
