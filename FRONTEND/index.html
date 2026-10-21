@@ -20,19 +20,84 @@
                 <h1 class="text-xl font-bold tracking-tight text-white">Control Taller <span class="text-xs bg-blue-900 text-blue-200 px-2 py-0.5 rounded ml-2">Web Local v2.0</span></h1>
             </div>
             <div class="flex items-center space-x-4">
-                <button @click="sincronizarDropbox" class="bg-[#29292e] hover:bg-[#323238] text-sm text-yellow-400 px-4 py-2 rounded-lg border border-yellow-500/30 transition flex items-center space-x-2">
+                <button @click="sincronizarDropbox" :disabled="cargando" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-60 disabled:cursor-wait text-sm text-yellow-400 px-4 py-2 rounded-lg border border-yellow-500/30 transition flex items-center space-x-2">
                     <i class="fa-solid fa-sync" :class="{'fa-spin': cargando}"></i>
-                    <span>Sincronizar desde Dropbox</span>
+                    <span>{{ cargando ? 'Sincronizando…' : 'Sincronizar desde Dropbox' }}</span>
                 </button>
-                <button @click="procesarCola" class="bg-yellow-500 hover:bg-yellow-400 text-black text-sm font-bold px-4 py-2 rounded-lg transition flex items-center space-x-2">
-                    <i class="fa-solid fa-bolt"></i>
-                    <span>Procesar Cola Visitas</span>
-                </button>
+                <!-- Desactivado hasta la Etapa 3 (decisión de Steven): no hace ninguna llamada al backend. -->
+                <div class="flex flex-col items-center">
+                    <button type="button" disabled aria-disabled="true" title="Disponible en la Etapa 3" class="bg-[#29292e] text-gray-500 border border-gray-600 text-sm font-bold px-4 py-2 rounded-lg cursor-not-allowed opacity-70 flex items-center space-x-2">
+                        <i class="fa-solid fa-bolt"></i>
+                        <span>Procesar Cola Visitas</span>
+                    </button>
+                    <span class="text-[10px] text-gray-500 mt-0.5">Disponible en la Etapa 3</span>
+                </div>
             </div>
         </header>
 
         <!-- CONTENIDO PRINCIPAL -->
         <main class="flex-1 overflow-y-auto p-6 space-y-6">
+            <!-- MENSAJES DE ERROR -->
+            <div v-if="errorSync" class="bg-red-950 border border-red-700 text-red-200 rounded-xl px-5 py-4 flex justify-between items-start">
+                <div class="flex items-start space-x-3">
+                    <i class="fa-solid fa-triangle-exclamation text-red-400 mt-0.5"></i>
+                    <div>
+                        <p class="font-bold text-red-100">No se pudo sincronizar con Dropbox</p>
+                        <p class="text-sm mt-1">{{ errorSync }}</p>
+                    </div>
+                </div>
+                <button @click="errorSync = ''" class="text-red-300 hover:text-white text-sm" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div v-if="errorDashboard" class="bg-red-950 border border-red-700 text-red-200 rounded-xl px-5 py-4 flex items-start space-x-3">
+                <i class="fa-solid fa-plug-circle-xmark text-red-400 mt-0.5"></i>
+                <div>
+                    <p class="font-bold text-red-100">No se pudo cargar el tablero</p>
+                    <p class="text-sm mt-1">{{ errorDashboard }}</p>
+                </div>
+            </div>
+
+            <!-- RESUMEN DE LA ÚLTIMA SINCRONIZACIÓN -->
+            <div v-if="resumenSync" class="bg-[#1a1a1e] border border-[#29292e] rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-center">
+                    <h3 class="font-bold text-white"><i class="fa-solid fa-sync text-yellow-400 mr-2"></i>Resultado de la sincronización</h3>
+                    <div class="flex items-center space-x-4">
+                        <span class="text-xs text-gray-400">{{ resumenSync.hora }}</span>
+                        <button @click="resumenSync = null" class="text-gray-400 hover:text-white text-sm" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                </div>
+                <div class="divide-y divide-[#29292e]">
+                    <div v-for="r in resumenSync.proyectos" :key="r.id" class="px-6 py-4">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="font-semibold text-white mr-2">{{ r.nombre }}</span>
+                            <span v-if="r.layout === 'supervision 5.1'" class="bg-blue-950 text-blue-300 border border-blue-800/50 text-xs px-2 py-0.5 rounded">{{ r.layout }}</span>
+                            <span v-else-if="r.layout === 'pendiente de verificar'" class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">layout pendiente de verificar</span>
+                            <span v-else class="bg-[#29292e] text-gray-300 border border-gray-600 text-xs px-2 py-0.5 rounded">{{ r.layout }}</span>
+                        </div>
+                        <div class="flex flex-wrap gap-2 mt-3 text-xs">
+                            <span class="bg-[#121214] border border-[#29292e] px-2.5 py-1 rounded">Nuevas: <b class="text-white">{{ r.visitas_nuevas }}</b></span>
+                            <span class="bg-[#121214] border border-[#29292e] px-2.5 py-1 rounded">Actualizadas: <b class="text-white">{{ r.actualizadas }}</b></span>
+                            <span class="bg-[#121214] border border-[#29292e] px-2.5 py-1 rounded">Sin cambios: <b class="text-white">{{ r.sin_cambios }}</b></span>
+                            <span class="px-2.5 py-1 rounded border" :class="r.con_dudas > 0 ? 'bg-orange-950 border-orange-600 text-orange-200' : 'bg-[#121214] border-[#29292e]'">Con dudas: <b>{{ r.con_dudas }}</b></span>
+                            <span class="bg-[#121214] border border-[#29292e] px-2.5 py-1 rounded">Procesadas: <b class="text-white">{{ r.procesadas }}</b></span>
+                            <span v-if="(r.planos_sellados || []).length" class="bg-[#121214] border border-[#29292e] px-2.5 py-1 rounded" :title="r.planos_sellados.join('\n')">Planos sellados: <b class="text-white">{{ r.planos_sellados.length }}</b></span>
+                            <span v-if="(r.dudas_creadas || []).length" class="bg-orange-950 border border-orange-600 text-orange-200 px-2.5 py-1 rounded">Dudas nuevas: <b>{{ r.dudas_creadas.length }}</b></span>
+                        </div>
+                        <ul v-if="(r.avisos || []).length" class="mt-3 space-y-1 text-xs text-yellow-300">
+                            <li v-for="(a, i) in r.avisos" :key="i"><i class="fa-solid fa-circle-info mr-1.5"></i>{{ a }}</li>
+                        </ul>
+                        <ul v-if="(r.desaparecidas || []).length" class="mt-3 space-y-1 text-xs text-red-300">
+                            <li v-for="d in r.desaparecidas" :key="d.id"><i class="fa-solid fa-folder-minus mr-1.5"></i>Carpeta ya no encontrada en Dropbox: {{ d.nombre_carpeta }} <span class="text-gray-400">({{ d.estado }})</span></li>
+                        </ul>
+                        <ul v-if="(r.omitidas || []).length" class="mt-3 space-y-1 text-xs text-gray-400">
+                            <li v-for="(o, i) in r.omitidas" :key="i"><i class="fa-solid fa-ban mr-1.5"></i>Omitida: {{ o.nombre_carpeta }} — {{ o.motivo }}</li>
+                        </ul>
+                        <ul v-if="(r.dudas_creadas || []).length" class="mt-3 space-y-1 text-xs text-orange-200">
+                            <li v-for="(d, i) in r.dudas_creadas" :key="i"><i class="fa-solid fa-circle-question mr-1.5"></i>{{ d.visita_id }} · {{ d.campo_afectado }}: {{ d.descripcion_pregunta }}</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
             <!-- TARJETAS DE MÉTRICAS -->
             <div class="grid grid-cols-5 gap-4">
                 <div class="bg-[#1a1a1e] border border-[#29292e] p-4 rounded-xl">
@@ -96,6 +161,61 @@
                 </div>
             </div>
 
+            <!-- COLA DE VISITAS -->
+            <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-center">
+                    <h3 class="font-bold text-white">Cola de Visitas a Obra</h3>
+                    <span class="text-xs text-gray-400">{{ visitas.length }} visitas · <span :class="contarConDudas > 0 ? 'text-orange-300 font-semibold' : ''">{{ contarConDudas }} con dudas</span></span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-[#121214] text-gray-400 text-xs uppercase tracking-wider border-b border-[#29292e]">
+                            <tr>
+                                <th class="px-6 py-3">Proyecto</th>
+                                <th class="px-6 py-3">N.º</th>
+                                <th class="px-6 py-3">Carpeta de visita</th>
+                                <th class="px-6 py-3">Fecha</th>
+                                <th class="px-6 py-3">Clase</th>
+                                <th class="px-6 py-3">Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[#29292e]">
+                            <tr v-if="!visitas.length">
+                                <td colspan="6" class="px-6 py-6 text-center text-gray-500 text-xs">{{ errorDashboard ? 'Sin datos: no se pudo leer la cola de visitas del backend.' : 'No hay visitas registradas. Pulsa "Sincronizar desde Dropbox".' }}</td>
+                            </tr>
+                            <tr v-for="v in visitasOrdenadas" :key="v.id" class="hover:bg-[#222227] transition" :class="{'bg-orange-950/30 border-l-4 border-orange-500': v.estado === 'Con dudas'}">
+                                <td class="px-6 py-3 text-gray-300 text-xs">{{ nombreProyecto(v.proyecto_id) }}</td>
+                                <td class="px-6 py-3 font-bold text-white">
+                                    <span v-if="esPendiente(v.numero)" class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">pendiente de verificar</span>
+                                    <span v-else>{{ v.numero }}</span>
+                                </td>
+                                <td class="px-6 py-3 text-white" :title="v.ruta_carpeta">{{ v.nombre_carpeta }}</td>
+                                <td class="px-6 py-3 whitespace-nowrap">
+                                    <span v-if="formatearFecha(v.fecha_visita)" class="text-gray-200">{{ formatearFecha(v.fecha_visita) }}</span>
+                                    <span v-else class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">pendiente de verificar</span>
+                                </td>
+                                <td class="px-6 py-3">
+                                    <span v-if="esPendiente(v.clase)" class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">pendiente de verificar</span>
+                                    <span v-else class="text-gray-200">{{ v.clase }}</span>
+                                    <ul v-if="v.clase === 'Mixta'" class="mt-1 space-y-0.5 text-xs text-gray-400">
+                                        <li v-for="(d, i) in parsearJSON(v.clase_detalle_json, [])" :key="i">{{ d.elementos }}: <span class="text-gray-200">{{ d.clase }}</span></li>
+                                        <li v-if="!parsearJSON(v.clase_detalle_json, []).length" class="text-orange-300">detalle pendiente de verificar</li>
+                                    </ul>
+                                </td>
+                                <td class="px-6 py-3">
+                                    <span class="text-xs px-2 py-0.5 rounded border font-medium" :class="claseEstado(v.estado)">
+                                        <i v-if="v.estado === 'Con dudas'" class="fa-solid fa-circle-question mr-1"></i>{{ v.estado }}
+                                    </span>
+                                    <p v-if="parsearJSON(v.campos_pendientes_json, []).length" class="text-xs text-orange-300 mt-1">
+                                        Pendiente: {{ parsearJSON(v.campos_pendientes_json, []).map(etiquetaCampo).join(', ') }}
+                                    </p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- ÓRDENES DE TRABAJO (KANBAN) -->
             <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl p-6">
                 <h3 class="font-bold text-white mb-4">Órdenes de Trabajo Activas (OT)</h3>
@@ -119,7 +239,10 @@
     </div>
 
     <script>
-        const { createApp, ref, onMounted } = Vue;
+        const { createApp, ref, computed, onMounted } = Vue;
+        const API = 'http://localhost:8000';
+        const PENDIENTE = 'pendiente de verificar';
+
         createApp({
             setup() {
                 const stats = ref({});
@@ -127,36 +250,109 @@
                 const visitas = ref([]);
                 const ordenes = ref([]);
                 const cargando = ref(false);
+                const errorSync = ref('');
+                const errorDashboard = ref('');
+                const resumenSync = ref(null);
+
+                // --- Utilidades de presentación (no calculan reglas de ingeniería) ---
+                const esPendiente = (v) => v === null || v === undefined || v === '' || String(v).trim().toLowerCase() === PENDIENTE;
+
+                // Solo acepta AAAA-MM-DD y lo muestra como DD/MM/AAAA. Cualquier otro valor
+                // devuelve '' para que la UI lo marque como "pendiente de verificar".
+                const formatearFecha = (valor) => {
+                    if (esPendiente(valor)) return '';
+                    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(valor).trim());
+                    return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+                };
+
+                const parsearJSON = (texto, porDefecto) => {
+                    if (texto === null || texto === undefined || texto === '') return porDefecto;
+                    if (typeof texto !== 'string') return texto;
+                    try { return JSON.parse(texto); } catch (e) { return porDefecto; }
+                };
+
+                const ETIQUETAS_CAMPO = { fecha_visita: 'fecha', clase: 'clase', numero: 'número' };
+                const etiquetaCampo = (c) => ETIQUETAS_CAMPO[c] || c;
+
+                const claseEstado = (estado) => ({
+                    'Sin procesar': 'bg-[#29292e] text-gray-300 border-gray-600',
+                    'En cola': 'bg-yellow-950 text-yellow-300 border-yellow-800/50',
+                    'En proceso': 'bg-blue-950 text-blue-300 border-blue-800/50',
+                    'Con dudas': 'bg-orange-900 text-orange-100 border-orange-500 font-bold',
+                    'En revisión': 'bg-purple-950 text-purple-300 border-purple-800/50',
+                    'Procesada': 'bg-green-950 text-green-300 border-green-800/50',
+                }[estado] || 'bg-[#29292e] text-gray-300 border-gray-600');
+
+                const nombreProyecto = (id) => (proyectos.value.find(p => p.id === id) || {}).nombre || id;
+
+                const visitasOrdenadas = computed(() => [...visitas.value].sort((a, b) => {
+                    const pa = nombreProyecto(a.proyecto_id), pb = nombreProyecto(b.proyecto_id);
+                    if (pa !== pb) return pa.localeCompare(pb, 'es');
+                    const na = Number(a.numero), nb = Number(b.numero);
+                    const va = Number.isFinite(na) && !esPendiente(a.numero), vb = Number.isFinite(nb) && !esPendiente(b.numero);
+                    if (va && vb && na !== nb) return na - nb;
+                    if (va !== vb) return va ? -1 : 1;
+                    return String(a.nombre_carpeta || '').localeCompare(String(b.nombre_carpeta || ''), 'es');
+                }));
+
+                const contarConDudas = computed(() => visitas.value.filter(v => v.estado === 'Con dudas').length);
+
+                const leerError = async (res) => {
+                    try {
+                        const cuerpo = await res.json();
+                        if (cuerpo && cuerpo.detail) return typeof cuerpo.detail === 'string' ? cuerpo.detail : JSON.stringify(cuerpo.detail);
+                    } catch (e) { /* respuesta sin JSON */ }
+                    return `El servidor respondió ${res.status} ${res.statusText}`.trim();
+                };
 
                 const cargarDatos = async () => {
                     try {
-                        const res = await fetch('http://localhost:8000/api/dashboard');
+                        const res = await fetch(`${API}/api/dashboard`);
+                        if (!res.ok) throw new Error(await leerError(res));
                         const data = await res.json();
-                        stats.value = data.stats;
-                        proyectos.value = data.proyectos;
-                        visitas.value = data.visitas;
-                        ordenes.value = data.ordenes;
+                        stats.value = data.stats || {};
+                        proyectos.value = data.proyectos || [];
+                        visitas.value = data.visitas || [];
+                        ordenes.value = data.ordenes || [];
+                        errorDashboard.value = '';
+                        return true;
                     } catch (e) {
-                        console.error("Error conectando con el backend FastAPI:", e);
+                        errorDashboard.value = `No hay conexión con el backend en ${API} (${e.message}). Verifica que el servidor FastAPI esté corriendo.`;
+                        return false;
                     }
                 };
 
                 const sincronizarDropbox = async () => {
+                    if (cargando.value) return;
                     cargando.value = true;
-                    await new Promise(r => setTimeout(r, 800));
-                    await cargarDatos();
-                    cargando.value = false;
-                    alert("¡Sincronización completada con la carpeta local de Dropbox!");
-                };
-
-                const procesarCola = async () => {
+                    errorSync.value = '';
                     try {
-                        const res = await fetch('http://localhost:8000/api/visitas/procesar-cola', { method: 'POST' });
+                        let res;
+                        try {
+                            res = await fetch(`${API}/api/dropbox/sync`, { method: 'POST' });
+                        } catch (e) {
+                            throw new Error(`El backend no responde en ${API}. Verifica que el servidor FastAPI esté corriendo.`);
+                        }
+                        if (!res.ok) throw new Error(await leerError(res));
                         const data = await res.json();
-                        alert(data.mensaje);
+                        if (!data || data.status !== 'ok' || !Array.isArray(data.proyectos)) {
+                            throw new Error('Respuesta inesperada del servidor de sincronización.');
+                        }
+                        const ahora = new Date();
+                        const dd = String(ahora.getDate()).padStart(2, '0');
+                        const mm = String(ahora.getMonth() + 1).padStart(2, '0');
+                        const hh = String(ahora.getHours()).padStart(2, '0');
+                        const mi = String(ahora.getMinutes()).padStart(2, '0');
+                        resumenSync.value = {
+                            hora: `${dd}/${mm}/${ahora.getFullYear()} ${hh}:${mi}`,
+                            proyectos: data.proyectos,
+                        };
                         await cargarDatos();
                     } catch (e) {
-                        alert("Error al procesar la cola.");
+                        resumenSync.value = null;
+                        errorSync.value = e.message;
+                    } finally {
+                        cargando.value = false;
                     }
                 };
 
@@ -167,7 +363,12 @@
                     cargarDatos();
                 });
 
-                return { stats, proyectos, visitas, ordenes, cargando, sincronizarDropbox, procesarCola, contarOTs, filtrarOTs };
+                return {
+                    stats, proyectos, visitas, ordenes, cargando, errorSync, errorDashboard, resumenSync,
+                    visitasOrdenadas, contarConDudas,
+                    esPendiente, formatearFecha, parsearJSON, etiquetaCampo, claseEstado, nombreProyecto,
+                    sincronizarDropbox, contarOTs, filtrarOTs
+                };
             }
         }).mount('#app');
     </script>
