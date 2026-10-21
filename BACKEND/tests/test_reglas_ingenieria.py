@@ -3,8 +3,8 @@
 # (§4.4–§4.7, §5.2, §6) y las respuestas de Steven del 21/10/2026 (PLANES/etapa-0.md).
 #
 # Las pruebas expresan la ESPECIFICACIÓN (CLAUDE.md y respuestas de Steven): cada
-# docstring cita la regla verificada y su referencia D#, P#, N#, T4b o T5
-# (PLANES/etapa-0.md y PLANES/etapa-0-matriz-reglas.md).
+# docstring cita la regla verificada y su referencia D#, P#, N#, T4b, T5 o T7–T9
+# (ajustes de la auditoría Gemini) (PLANES/etapa-0.md y PLANES/etapa-0-matriz-reglas.md).
 #
 # Convención de constantes (Regla de Oro #1):
 #   - "# SINTÉTICO: no es dato de proyecto"  -> valor inventado solo para probar (P11).
@@ -24,7 +24,7 @@ import reglas_ingenieria as ri
 # CONSTANTES
 # =====================================================================
 PENDIENTE = "pendiente de verificar"
-PENDIENTE_RE = r"(?i)pendiente de verificar"   # el mensaje actual usa "P" mayúscula (N4)
+PENDIENTE_RE = r"(?i)pendiente de verificar"   # N4; desde T9 / O10 todos los mensajes van en minúscula
 GUION_LARGO = "—"                          # "—" de §4.4
 
 # Recubrimiento por lado (m)
@@ -332,6 +332,49 @@ def test_medida_obra_sin_valor_plano_pendiente(medida):
         ri.evaluar_medida_acero_obra("COLUMNA RECTANGULAR", None, medida)
 
 
+TOLERANCIA_NEGATIVA_M = -0.005  # SINTÉTICO: tolerancia inválida (T9 / O8)
+
+
+@pytest.mark.parametrize("medida", [MEDIDA_ACERO_COLUMNA_CONFORME_M, MEDIDA_ACERO_COLUMNA_CASI_M])
+def test_medida_obra_t9_tolerancia_negativa_pendiente(medida):
+    """T9 / O8 (auditoría Gemini): tolerancia_m < 0 -> ValueError 'pendiente de verificar'
+    (no se ignora ni se toma su valor absoluto)."""
+    with pytest.raises(ValueError, match=PENDIENTE):
+        ri.evaluar_medida_acero_obra(
+            "COLUMNA RECTANGULAR", VALOR_PLANO_COLUMNA_M, medida, tolerancia_m=TOLERANCIA_NEGATIVA_M,
+        )
+
+
+@pytest.mark.parametrize("tolerancia", ["0.005", True])  # SINTÉTICO: tipos inválidos
+def test_medida_obra_t9_tolerancia_no_numerica_pendiente(tolerancia):
+    """T9 / O8 (auditoría Gemini): tolerancia que no es número -> ValueError 'pendiente de verificar',
+    nunca TypeError."""
+    with pytest.raises(ValueError, match=PENDIENTE):
+        ri.evaluar_medida_acero_obra(
+            "COLUMNA RECTANGULAR", VALOR_PLANO_COLUMNA_M, MEDIDA_ACERO_COLUMNA_CONFORME_M, tolerancia_m=tolerancia,
+        )
+
+
+def test_medida_obra_t9_tolerancia_cero_es_igualdad():
+    """T9 / O8: tolerancia 0 es válida (>= 0) y equivale a igualdad exacta."""
+    ok = ri.evaluar_medida_acero_obra(
+        "COLUMNA RECTANGULAR", VALOR_PLANO_COLUMNA_M, MEDIDA_ACERO_COLUMNA_CONFORME_M, tolerancia_m=0,
+    )
+    casi = ri.evaluar_medida_acero_obra(
+        "COLUMNA RECTANGULAR", VALOR_PLANO_COLUMNA_M, MEDIDA_ACERO_COLUMNA_CASI_M, tolerancia_m=0,
+    )
+    assert ok["conforme"] is True and casi["conforme"] is False
+
+
+def test_recubrimiento_t9_mensaje_en_minuscula():
+    """T9 / O10 (auditoría Gemini): el mensaje del recubrimiento usa la constante PENDIENTE
+    ('pendiente de verificar', en minúscula) como el resto del motor."""
+    with pytest.raises(ValueError) as exc:
+        ri.obtener_recubrimiento("TIPO INEXISTENTE")
+    assert PENDIENTE in str(exc.value)
+    assert "Pendiente de verificar" not in str(exc.value)
+
+
 # =====================================================================
 # §4.4 — CAMPO EJES
 # =====================================================================
@@ -405,9 +448,72 @@ def test_ejes_caso_desconocido_pendiente():
     ("tramo_portico", {"eje_letra_1": "10", "eje_num_1": "F", "eje_num_2": "11"}),
 ])
 def test_ejes_argumentos_invertidos_pendiente(caso, kwargs):
-    """D4: la letra debe ser letra y el número número; invertidos -> 'pendiente de verificar'
-    (nunca algo como 'EJE 11-F')."""
+    """D4: en cruce y muro la letra debe ser letra y el número número (nunca 'EJE 11-F').
+    T7 (auditoría Gemini): en viga y pórtico el principal puede ser número, pero los extremos
+    deben ser de la otra familia o 'MC'; aquí uno es de la misma familia -> 'pendiente de verificar'."""
     assert ri.formatear_campo_ejes(caso, **kwargs) == PENDIENTE
+
+
+# --- T7 (auditoría Gemini, CLAUDE.md §4.3): pórticos sobre ejes numéricos y extremos MC ---
+@pytest.mark.parametrize("principal, ext_1, ext_2, esperado", [
+    ("1", "MC", "A", "EJE 1 ENTRE MC-A"),    # NORMA: CLAUDE.md §4.3 ('P1 EJE 1 ENTRE MC-A')
+    ("1", "B", "D", "EJE 1 ENTRE B-D"),      # NORMA: ejemplo de Gemini (auditoría Etapa 0)
+    ("B", "MC", "1", "EJE B ENTRE MC-1"),    # NORMA: ejemplo de Gemini (auditoría Etapa 0)
+    ("F", "10", "11", "EJE F ENTRE 10-11"),  # NORMA: CLAUDE.md §4.4 (formato sin cambios)
+    ("B", "1", "MC", "EJE B ENTRE 1-MC"),    # SINTÉTICO: MC en el segundo extremo
+    (" 1' ", "a'", "mc", "EJE 1' ENTRE A'-MC"),  # SINTÉTICO: prima, minúsculas y espacios
+])
+def test_ejes_t7_tramo_portico_principal_letra_o_numero(principal, ext_1, ext_2, esperado):
+    """T7 (auditoría Gemini): en 'tramo_portico' eje_letra_1 es el eje principal (letra o número)
+    y eje_num_1/2 los extremos (número, letra o 'MC', de la otra familia que el principal)."""
+    r = ri.formatear_campo_ejes("tramo_portico", eje_letra_1=principal, eje_num_1=ext_1, eje_num_2=ext_2)
+    assert r == esperado
+
+
+@pytest.mark.parametrize("principal, ext_1, ext_2, esperado", [
+    ("C", "2", "3", "EJE C, ENTRE 2-3"),     # NORMA: CLAUDE.md §4.4 (formato sin cambios)
+    ("1", "MC", "A", "EJE 1, ENTRE MC-A"),   # SINTÉTICO: mismo criterio que el pórtico
+    ("1", "B", "D", "EJE 1, ENTRE B-D"),     # SINTÉTICO: mismo criterio que el pórtico
+    ("B", "MC", "1", "EJE B, ENTRE MC-1"),   # SINTÉTICO: mismo criterio que el pórtico
+])
+def test_ejes_t7_viga_recta_principal_letra_o_numero(principal, ext_1, ext_2, esperado):
+    """T7 (auditoría Gemini): 'viga_recta_sobre_letra' sigue el criterio del pórtico con su
+    formato 'EJE X, ENTRE a-b'."""
+    r = ri.formatear_campo_ejes("viga_recta_sobre_letra", eje_letra_1=principal, eje_num_1=ext_1, eje_num_2=ext_2)
+    assert r == esperado
+
+
+@pytest.mark.parametrize("caso", ["tramo_portico", "viga_recta_sobre_letra"])
+@pytest.mark.parametrize("principal, ext_1, ext_2", [
+    ("1", "MC", "MC"),    # MC-MC
+    ("B", "MC", "MC"),    # MC-MC
+    ("1", "", "A"),       # extremo vacío
+    ("1", "A", None),     # extremo ausente
+    ("B", "  ", "1"),     # extremo en blanco
+    ("1", "2", "A"),      # extremo de la misma familia que el principal (número)
+    ("1", "2", "3"),      # ambos extremos de la misma familia
+    ("B", "C", "1"),      # extremo de la misma familia que el principal (letra)
+    ("B", "C", "D"),      # ambos extremos de la misma familia
+    ("MC", "1", "2"),     # MC no es eje principal
+    ("", "1", "2"),       # principal vacío
+    ("1", "MC'", "A"),    # MC con prima no existe
+    ("1", "A-B", "C"),    # token raro
+    ("B", "1A", "2"),     # token raro
+    ("B", "1''", "2"),    # prima doble
+    ("A''", "1", "2"),    # principal con prima doble
+    ("1", "A", "#"),      # token raro
+])
+def test_ejes_t7_extremos_incoherentes_pendiente(caso, principal, ext_1, ext_2):
+    """T7 (auditoría Gemini) / Regla de Oro #1: extremos vacíos, 'MC-MC', de la misma familia que el
+    eje principal o tokens inválidos -> 'pendiente de verificar' (se mantiene el rechazo útil)."""
+    r = ri.formatear_campo_ejes(caso, eje_letra_1=principal, eje_num_1=ext_1, eje_num_2=ext_2)
+    assert r == PENDIENTE
+
+
+def test_ejes_t7_docstring_principal_y_extremos():
+    """T7: el docstring documenta que eje_letra_1 es el principal y eje_num_1/2 los extremos (MC)."""
+    doc = ri.formatear_campo_ejes.__doc__ or ""
+    assert "T7" in doc and "PRINCIPAL" in doc and "EXTREMOS" in doc and "'MC'" in doc
 
 
 def test_ejes_elemento_unico_en_planta_documentado():
@@ -565,8 +671,8 @@ def test_cuantia_diametro_desconocido_error():
     (0, H_SECCION_M), (B_SECCION_M, 0), (-B_SECCION_M, H_SECCION_M), (B_SECCION_M, -H_SECCION_M),
 ])
 def test_cuantia_dimensiones_no_positivas_error(b, h):
-    """§4.6: dimensiones ≤ 0 -> ValueError."""
-    with pytest.raises(ValueError):
+    """§4.6 / T9 / O9 (auditoría Gemini): dimensiones ≤ 0 -> ValueError con 'pendiente de verificar'."""
+    with pytest.raises(ValueError, match=PENDIENTE):
         ri.calcular_cuantia_elemento(b, h, BARRAS_SECCION)
 
 
@@ -685,6 +791,24 @@ def test_log_tramo_repetido_abre_elementos_separados():
     assert len(tramos) == 2
     assert tramos[0]["fotos"] == ["f02.jpg"]
     assert tramos[1]["fotos"] == ["f03.jpg"]
+
+
+@pytest.mark.parametrize("log", [
+    _log(("f01.jpg", "Tramo 2-3", ""), ("f02.jpg", "", "")),
+    _log(("f01.jpg", "C1 B4", ""), ("f02.jpg", "Tramo 2 - 3", ""), ("f03.jpg", "", "")),
+    _log(("f01.jpg", "P eje A", ""), ("f02.jpg", "C1 B4", ""), ("f03.jpg", "tramo 2-3", ""), ("f04.jpg", "", "")),
+])
+def test_log_t8_tramo_sin_portico_abierto_pendiente(log):
+    """T8 / O5 (auditoría Gemini): una etiqueta 'Tramo n-n' sin 'P eje X' abierto abre un grupo con
+    id_sugerido 'pendiente de verificar' y 'duda', igual que D6c; nunca id 'TRAMO' y sin perder fotos."""
+    el = ri.agrupar_log_fotografico_visita(log)
+    assert "TRAMO" not in [str(i).upper() for i in _ids(el)]
+    grupo = el[-1]
+    assert grupo["id_sugerido"] == PENDIENTE
+    assert grupo["es_portico_tramo"] is False
+    assert grupo["duda"] and PENDIENTE in grupo["duda"]
+    assert grupo["fotos"] == [a["archivo"] for a in log[-2:]]
+    assert sorted(_todas_las_fotos(el)) == sorted(a["archivo"] for a in log)
 
 
 # =====================================================================
@@ -1094,6 +1218,39 @@ def test_auditor_12_fecha_vacia_pendiente():
     assert _errores(sin_clave, contiene="#12")
 
 
+@pytest.mark.parametrize("fecha", [date(2026, 9, 11), 11092026, 11.09])  # SINTÉTICO: tipos no str
+def test_auditor_12_t9_fecha_no_str_pendiente(fecha):
+    """T9 (auditoría Gemini): fecha que no es str (date, int, float) -> error #12 con
+    'pendiente de verificar', sin TypeError; no se convierte en silencio."""
+    errores = _errores(_ficha(fecha=fecha), contiene="#12")
+    assert len(errores) == 1
+    assert PENDIENTE in errores[0] and "fecha" in errores[0]
+
+
+@pytest.mark.parametrize("campo, error", [
+    ("nombre_proyecto", "#8"),
+    ("ejes", "#11"),
+    ("observaciones_texto", "#9"),
+    ("tipo_elemento", "#9"),
+])
+@pytest.mark.parametrize("valor", [123, date(2026, 9, 11), ["EJE F-11"]])  # SINTÉTICO: tipos no str
+def test_auditor_t9_campos_texto_no_str_pendiente(campo, error, valor):
+    """T9 (auditoría Gemini): nombre_proyecto, ejes, observaciones_texto y tipo_elemento con un
+    tipo que no es str -> error con 'pendiente de verificar' que nombra el campo, sin lanzar."""
+    for formato in ("HV-LEV", "STP-MIVED", "CATDIC-STP"):
+        errores = _errores(_ficha(**{campo: valor}), formato=formato, contiene=error)
+        assert any(PENDIENTE in e and f"'{campo}'" in e for e in errores)
+
+
+def test_auditor_t9_tipo_no_str_con_medidas_obra_controlado():
+    """T9: tipo_elemento no str con 'medidas_obra' -> error #12 'pendiente de verificar' (recubrimiento
+    no definido), sin TypeError."""
+    ficha = _ficha(tipo_elemento=5, medidas_obra=[_medida(VALOR_PLANO_COLUMNA_M, MEDIDA_ACERO_COLUMNA_CONFORME_M,
+                                                          VALOR_PLANO_COLUMNA_M)])
+    errores = _errores(ficha, formato="STP-MIVED", contiene="#12")
+    assert any("OBRA" in e and PENDIENTE in e for e in errores)
+
+
 # --- Error #16 ---
 @pytest.mark.parametrize("campo", ["firma_inspector_imagen", "firma_texto_fabricado"])
 def test_auditor_16_firma_fabricada(campo):
@@ -1246,6 +1403,16 @@ def test_auditor_12_obra_respeta_tolerancia_visita():
     assert not _errores(con_tol, formato="STP-MIVED", contiene="#12")
     sin_tol = _ficha(medidas_obra=medidas)
     assert _errores(sin_tol, formato="STP-MIVED", contiene="#12")
+
+
+@pytest.mark.parametrize("tolerancia", [-0.005, "0.005"])  # SINTÉTICO: tolerancias inválidas
+def test_auditor_12_t9_tolerancia_visita_invalida_controlada(tolerancia):
+    """T9 / O8 (auditoría Gemini): tolerancia_visita_m negativa o no numérica -> error #12
+    'pendiente de verificar' controlado (el auditor no lanza)."""
+    medidas = [_medida(VALOR_PLANO_COLUMNA_M, MEDIDA_ACERO_COLUMNA_CONFORME_M, VALOR_PLANO_COLUMNA_M)]
+    errores = _errores(_ficha(medidas_obra=medidas, tolerancia_visita_m=tolerancia),
+                       formato="STP-MIVED", contiene="#12")
+    assert len(errores) == 1 and PENDIENTE in errores[0] and "tolerancia" in errores[0]
 
 
 @pytest.mark.parametrize("tipo, plano, acero", [

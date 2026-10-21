@@ -190,5 +190,44 @@ Que `BACKEND/reglas_ingenieria.py` (ya existente, 325 líneas) quede **contrasta
 - Conectar el motor de reglas a `main.py` / "Procesar Cola" (Etapa 3).
 - Errores #1–#7, #13, #14, #16 (parte PDF), #17, #18: dependen de los generadores (Etapas 3 y 4).
 - Sincronizador de Dropbox e importador de diseño (Etapas 1 y 2).
-- `BACKEND/catdic_local.db` está trackeado en git y no está en `.gitignore`; decidir si debe versionarse es otro tema.
+- ~~`BACKEND/catdic_local.db` trackeado en git~~ → resuelto en T10 (fuera del índice, ignorado por `*.db`).
 - Commits y push: los hace `/evaluar` con confirmación de Steven.
+
+## Ajustes de la auditoría de Gemini (21/10/2026)
+Gemini APROBÓ la Etapa 0 con 4 ajustes antes de la Etapa 1. Steven los trasladó tal cual.
+
+### T7 — Pórticos sobre ejes numéricos y extremos `MC`
+- Estado: APROBADA · commit "Etapa 0 · T7-T10" (cierre). 306 pruebas en verde.
+- Ejecutor: ejecutor-backend
+- Archivos: `BACKEND/reglas_ingenieria.py`, `BACKEND/tests/test_reglas_ingenieria.py`
+- Qué hacer: en `formatear_campo_ejes`, casos `tramo_portico` y `viga_recta_sobre_letra`, el eje principal puede ser letra o número (con prima) y los extremos del tramo, letra, número o `MC` (muro de contención), con prima. Ejemplos del CLAUDE.md §4.3 y de Gemini: `EJE 1 ENTRE MC-A`, `EJE 1 ENTRE B-D`, `EJE B ENTRE MC-1`. Se sigue rechazando ("pendiente de verificar") cuando el formato es inválido o los extremos no son coherentes con el eje principal.
+- Criterios de aceptación:
+  - [ ] `tramo_portico` con 1 / MC / A → `EJE 1 ENTRE MC-A`; con 1 / B / D → `EJE 1 ENTRE B-D`; con B / MC / 1 → `EJE B ENTRE MC-1`.
+  - [ ] Extremos inválidos (vacíos, `MC-MC`, misma familia que el eje principal, tokens raros) → "pendiente de verificar".
+
+### T8 — `Tramo n-n` sin pórtico abierto (O5)
+- Estado: APROBADA · commit "Etapa 0 · T7-T10" (cierre). 306 pruebas en verde.
+- Ejecutor: ejecutor-backend
+- Archivos: los mismos que T7
+- Qué hacer: en `agrupar_log_fotografico_visita`, una etiqueta `Tramo n-n` sin `portico_activo` abre un grupo con `id_sugerido = PENDIENTE` y `duda`, igual que D6c.
+- Criterios de aceptación:
+  - [ ] Ningún grupo sale con `id_sugerido = "TRAMO"`; el grupo lleva `duda` con "pendiente de verificar".
+
+### T9 — Validaciones O8, O9, O10
+- Estado: APROBADA · commit "Etapa 0 · T7-T10" (cierre). 306 pruebas en verde.
+- Ejecutor: ejecutor-backend
+- Archivos: los mismos que T7
+- Qué hacer: `tolerancia_m < 0` → `ValueError` "pendiente de verificar"; el `ValueError` de dimensiones ≤ 0 en `calcular_cuantia_elemento` incluye "pendiente de verificar"; en el auditor, una `fecha` que no sea `str` da error #12 controlado (sin `TypeError`).
+- Criterios de aceptación:
+  - [ ] Pruebas nuevas para los tres casos; `python -m pytest` desde `BACKEND/` en verde.
+
+### T10 — `.gitignore` y base de datos fuera del repositorio (O13)
+- Estado: APROBADA · commit "Etapa 0 · T7-T10" (cierre). `.gitignore` con `.pytest_cache/` y `*.db`; BD fuera del índice (sigue en disco, 65 536 bytes).
+- Ejecutor: coordinador (configuración de git, sin código)
+- Archivos: `.gitignore`; `git rm --cached BACKEND/catdic_local.db` (la BD sigue en disco)
+- Criterios de aceptación:
+  - [ ] `.gitignore` incluye `.pytest_cache/` y `*.db`; `git ls-files BACKEND/catdic_local.db` vacío; el archivo sigue existiendo en disco.
+
+O4 (docstrings obsoletos) ya se corrigió en `3b8393a`; T7–T9 deben mantenerlo así.
+
+Pendientes que deja la evaluación de T7-T10 (Mesa de Dudas): ver `etapa-0-evaluacion.md`, segunda evaluación (extremos iguales `10-10`, `C1 Tramo 2-3` con pórtico abierto, §4.4 con eje principal numérico y `MC`, tolerancia como texto, 30 MB/MiB, coma decimal).

@@ -64,7 +64,8 @@ def obtener_categoria_elemento(tipo_elemento: str) -> str:
     """Devuelve la categoría de §4.5 del tipo (sin distinguir tildes ni mayúsculas)."""
     tipo_norm = _normalizar_texto(tipo_elemento)
     if tipo_norm not in CATEGORIA_POR_TIPO:
-        raise ValueError(f"Pendiente de verificar: recubrimiento no definido para '{tipo_elemento}'")
+        # T9 / O10 (auditoría Gemini): mismo texto 'pendiente de verificar' en minúscula
+        raise ValueError(f"{PENDIENTE}: recubrimiento no definido para '{tipo_elemento}'")
     return CATEGORIA_POR_TIPO[tipo_norm]
 
 
@@ -82,11 +83,19 @@ def evaluar_medida_acero_obra(
     Si coincide con el plano, la columna OBRA lleva el valor del plano.
     tolerancia_m llega como dato de la visita; si es None se compara con
     igualdad exacta (D2 / P2).
+    T9 / O8 (auditoría Gemini): una tolerancia negativa o no numérica no se
+    corrige ni se ignora -> ValueError 'pendiente de verificar'.
     """
     rec = obtener_recubrimiento(tipo_elemento)
     # N1: sin valor del plano no hay comparación posible
     if valor_plano_m is None:
         raise ValueError(f"{PENDIENTE}: falta el valor del plano para '{tipo_elemento}'.")
+    # T9 / O8: la tolerancia de la visita debe ser un número >= 0
+    if tolerancia_m is not None:
+        if isinstance(tolerancia_m, bool) or not isinstance(tolerancia_m, (int, float)):
+            raise ValueError(f"{PENDIENTE}: tolerancia de la visita no numérica ({tolerancia_m!r}).")
+        if tolerancia_m < 0:
+            raise ValueError(f"{PENDIENTE}: tolerancia de la visita negativa ({tolerancia_m}).")
     if medida_acero_campo_m is None:
         return {
             "valor_columna_obra_m": valor_plano_m,
@@ -145,6 +154,46 @@ def _es_eje_numero(valor: Optional[str]) -> bool:
     return bool(valor) and re.fullmatch(_PATRON_EJE_NUMERO, valor.strip()) is not None
 
 
+# T7 (auditoría Gemini, CLAUDE.md §4.3): extremo de tramo en el muro de contención
+TOKEN_MURO_CONTENCION = "MC"
+
+
+def _familia_eje_tramo(valor: Optional[str]) -> Optional[str]:
+    """
+    T7: clasifica un eje de pórtico/viga como 'LETRA', 'NUMERO' o 'MC'
+    (muro de contención, sin prima). Cualquier otra cosa -> None.
+    """
+    if not isinstance(valor, str) or not valor.strip():
+        return None
+    token = valor.strip().upper()
+    if token == TOKEN_MURO_CONTENCION:
+        return "MC"
+    if token.rstrip("'") == TOKEN_MURO_CONTENCION:
+        return None  # "MC'" no existe: no se adivina si es MC o un eje-letra
+    if re.fullmatch(_PATRON_EJE_NUMERO, token):
+        return "NUMERO"
+    if re.fullmatch(_PATRON_EJE_LETRA, token):
+        return "LETRA"
+    return None
+
+
+def _tramo_coherente(principal: Optional[str], extremo_1: Optional[str], extremo_2: Optional[str]) -> bool:
+    """
+    T7 (auditoría Gemini): el eje principal es letra o número; cada extremo es
+    de la otra familia o 'MC'. 'MC-MC', vacíos, extremos de la misma familia
+    que el principal o tokens inválidos -> False ('pendiente de verificar').
+    """
+    fam_principal = _familia_eje_tramo(principal)
+    if fam_principal not in ("LETRA", "NUMERO"):
+        return False
+    permitidas = {"NUMERO", "MC"} if fam_principal == "LETRA" else {"LETRA", "MC"}
+    fam_1 = _familia_eje_tramo(extremo_1)
+    fam_2 = _familia_eje_tramo(extremo_2)
+    if fam_1 not in permitidas or fam_2 not in permitidas:
+        return False
+    return not (fam_1 == "MC" and fam_2 == "MC")
+
+
 def interpretar_eje_de_visita(texto: Optional[str]) -> Union[Tuple[str, str], str]:
     """
     Lee el cruce puntual tal como viene escrito en la visita y devuelve
@@ -194,6 +243,16 @@ def formatear_campo_ejes(
       se conserva documentado por decisión de Steven (P6).
     Los ejes-letra deben ser letras y los ejes-número dígitos (D4), ambos con
     prima opcional ('A'', '2'', T4b); si faltan o no cumplen -> 'pendiente de verificar'.
+
+    T7 (auditoría Gemini, CLAUDE.md §4.3) en 'viga_recta_sobre_letra' y
+    'tramo_portico': eje_letra_1 es el EJE PRINCIPAL (letra o número, con prima)
+    y eje_num_1 / eje_num_2 son los EXTREMOS del tramo, que pueden ser números,
+    letras o 'MC' (muro de contención). Si el principal es letra, cada extremo
+    es número o 'MC'; si es número, cada extremo es letra o 'MC'. Ejemplos:
+    1 / MC / A -> 'EJE 1 ENTRE MC-A'; 1 / B / D -> 'EJE 1 ENTRE B-D';
+    B / MC / 1 -> 'EJE B ENTRE MC-1'. 'MC-MC', extremos vacíos, de la misma
+    familia que el principal o tokens inválidos -> 'pendiente de verificar'
+    (así se siguen rechazando los argumentos invertidos, D4).
     """
     caso = caso.lower().strip()
     if caso in ("losa", "viga_sin_eje_letra"):
@@ -206,14 +265,15 @@ def formatear_campo_ejes(
         if not _es_eje_letra(eje_letra_1) or not _es_eje_letra(eje_letra_2) or not _es_eje_numero(eje_num_1):
             return PENDIENTE
         return f"EJE {eje_letra_1.strip().upper()}-{eje_letra_2.strip().upper()},{eje_num_1.strip()}"
-    if caso == "viga_recta_sobre_letra":
-        if not _es_eje_letra(eje_letra_1) or not _es_eje_numero(eje_num_1) or not _es_eje_numero(eje_num_2):
+    if caso in ("viga_recta_sobre_letra", "tramo_portico"):
+        # T7: eje principal letra o número; extremos de la otra familia o 'MC'
+        if not _tramo_coherente(eje_letra_1, eje_num_1, eje_num_2):
             return PENDIENTE
-        return f"EJE {eje_letra_1.strip().upper()}, ENTRE {eje_num_1.strip()}-{eje_num_2.strip()}"
-    if caso == "tramo_portico":
-        if not _es_eje_letra(eje_letra_1) or not _es_eje_numero(eje_num_1) or not _es_eje_numero(eje_num_2):
-            return PENDIENTE
-        return f"EJE {eje_letra_1.strip().upper()} ENTRE {eje_num_1.strip()}-{eje_num_2.strip()}"
+        principal = eje_letra_1.strip().upper()
+        extremos = f"{eje_num_1.strip().upper()}-{eje_num_2.strip().upper()}"
+        if caso == "viga_recta_sobre_letra":
+            return f"EJE {principal}, ENTRE {extremos}"
+        return f"EJE {principal} ENTRE {extremos}"
     if caso == "area":
         # T4b: platea como área '(A-B),(1-2)'
         if (not _es_eje_letra(eje_letra_1) or not _es_eje_letra(eje_letra_2)
@@ -254,7 +314,8 @@ def calcular_cuantia_elemento(
     Si en_porcentaje=False (para STP-MIVED), devuelve razón decimal (ej. 0.0185).
     """
     if lx_m <= 0 or ly_m <= 0:
-        raise ValueError("Dimensiones de sección inválidas para cálculo de cuantía.")
+        # T9 / O9 (auditoría Gemini): el mensaje dice 'pendiente de verificar'
+        raise ValueError(f"{PENDIENTE}: dimensiones de sección inválidas para cálculo de cuantía.")
     # N2: sin barras no se inventa una cuantía 0.0
     if not barras:
         raise ValueError(f"{PENDIENTE}: no hay barras para calcular la cuantía.")
@@ -285,7 +346,9 @@ def agrupar_log_fotografico_visita(lista_fotos_log: List[Dict[str, str]]) -> Lis
     leyenda) abre un elemento singular 'X (n-n)'. Un mismo tramo puede abrir
     varios elementos (elementos grandes o complejos, N6).
     Los grupos sin elemento claro llevan 'duda' = 'pendiente de verificar...'
-    para la bandeja 'Con dudas' (D6a, D6c).
+    para la bandeja 'Con dudas' (D6a, D6c). T8 / O5 (auditoría Gemini): una
+    etiqueta con 'Tramo n-n' sin pórtico abierto abre un grupo con
+    id_sugerido 'pendiente de verificar' y 'duda' (nunca id 'TRAMO').
     """
     elementos_agrupados = []
     actual = None
@@ -329,6 +392,11 @@ def agrupar_log_fotografico_visita(lista_fotos_log: List[Dict[str, str]]) -> Lis
             # D6c: "P eje X" sin tramo no crea un elemento con id "P"
             actual = _abrir(etiqueta, PENDIENTE, False, archivo, leyenda,
                             duda=f"{PENDIENTE}: foto del pórtico eje {portico_activo} sin tramo.")
+        elif tramo_en_etiqueta:
+            # T8 / O5 (auditoría Gemini): 'Tramo n-n' sin 'P eje X' abierto no
+            # crea un elemento con id 'TRAMO'; queda en duda como en D6c
+            actual = _abrir(etiqueta, PENDIENTE, False, archivo, leyenda,
+                            duda=f"{PENDIENTE}: tramo '{tramo_en_etiqueta.group(1)}' sin pórtico abierto ('P eje X').")
         elif etiqueta:
             actual = _abrir(etiqueta, etiqueta.split()[0].upper(), False, archivo, leyenda)
         else:
@@ -500,8 +568,10 @@ def _auditar_columna_obra(ficha_data: Dict[str, object]) -> List[str]:
     if not medidas:
         return []  # la ficha no trae comparaciones plano/obra
     errores = []
-    tipo = ficha_data.get("tipo_elemento") or ""
-    tolerancia = ficha_data.get("tolerancia_visita_m")
+    tipo = ficha_data.get("tipo_elemento")
+    if not isinstance(tipo, str):
+        tipo = ""  # T9: sin tipo de texto -> recubrimiento 'pendiente de verificar' (ValueError controlado)
+    tolerancia = ficha_data.get("tolerancia_visita_m")  # T9 / O8: negativa o no numérica -> ValueError controlado
     for i, m in enumerate(medidas, start=1):
         etiqueta = m.get("dimension") or f"medida {i}"
         plano = _a_numero(m.get("valor_plano_m"))
@@ -520,6 +590,32 @@ def _auditar_columna_obra(ficha_data: Dict[str, object]) -> List[str]:
             errores.append(f"Error #12: columna OBRA de '{etiqueta}' no coincide con la corrección por "
                            f"recubrimiento (OBRA={obra}, esperado={esperado}).")
     return errores
+
+
+# T9 (auditoría Gemini): error que se reporta si un campo de texto llega con otro tipo
+ERROR_POR_CAMPO_TEXTO = {
+    "tipo_elemento": "#9/#11/#12",
+    "observaciones_texto": "#9/#10",
+    "ejes": "#11",
+    "nombre_proyecto": "#8",
+    "fecha": "#12",
+}
+
+
+def _campo_texto_ficha(ficha_data: Dict[str, object], clave: str, errores: List[str]) -> Tuple[str, bool]:
+    """
+    T9 (auditoría Gemini): devuelve (texto, es_valido). None o ausente -> ('', True).
+    Un valor que no sea str (date, int...) no se convierte ni revienta el auditor:
+    se reporta como error con 'pendiente de verificar' y se usa ''.
+    """
+    valor = ficha_data.get(clave)
+    if valor is None:
+        return "", True
+    if isinstance(valor, str):
+        return valor, True
+    errores.append(f"Error {ERROR_POR_CAMPO_TEXTO[clave]}: el campo '{clave}' no es texto "
+                   f"(tipo {type(valor).__name__}, valor {valor!r}; {PENDIENTE}).")
+    return "", False
 
 
 def auditar_datos_ficha_antes_de_renderizar(ficha_data: Dict[str, object], formato: str) -> List[str]:
@@ -547,15 +643,22 @@ def auditar_datos_ficha_antes_de_renderizar(ficha_data: Dict[str, object], forma
         'tolerancia_visita_m'  tolerancia de la visita (P2); None -> igualdad exacta.
       Usa 'tipo_elemento' para el recubrimiento. OBRA debe ser igual (a 4
       decimales) a evaluar_medida_acero_obra; datos faltantes -> 'pendiente de verificar'.
+      Una tolerancia negativa o no numérica es error #12 controlado (T9 / O8).
+    - T9 (auditoría Gemini): 'tipo_elemento', 'observaciones_texto', 'ejes',
+      'nombre_proyecto' y 'fecha' deben ser str; con otro tipo (p. ej. date o
+      int) se reporta el error de ERROR_POR_CAMPO_TEXTO con 'pendiente de
+      verificar', sin lanzar TypeError.
     """
     errores = []
-    tipo = _normalizar_texto(ficha_data.get("tipo_elemento") or "")
-    texto_obs = (ficha_data.get("observaciones_texto") or "")
+    tipo_txt, _ = _campo_texto_ficha(ficha_data, "tipo_elemento", errores)
+    texto_obs, _ = _campo_texto_ficha(ficha_data, "observaciones_texto", errores)
+    ejes, _ = _campo_texto_ficha(ficha_data, "ejes", errores)
+    nombre_txt, _ = _campo_texto_ficha(ficha_data, "nombre_proyecto", errores)
+    fecha, fecha_es_texto = _campo_texto_ficha(ficha_data, "fecha", errores)
+    tipo = _normalizar_texto(tipo_txt)
     texto_norm = _normalizar_texto(texto_obs)
     lineas_norm = [_normalizar_texto(l) for l in texto_obs.splitlines() if l.strip()]
-    ejes = (ficha_data.get("ejes") or "")
-    nombre_proy = _normalizar_texto(ficha_data.get("nombre_proyecto") or "")
-    fecha = (ficha_data.get("fecha") or "")
+    nombre_proy = _normalizar_texto(nombre_txt)
 
     # Error 8: NOMBRE PROYECTO con sufijo de visita o nivel en HV-LEV (D11: sin tildes)
     if formato == "HV-LEV" and any(p in nombre_proy for p in ["VISITA", "SOTANO", "NIVEL", "PARCIAL", "COMPLETIVO"]):
@@ -605,7 +708,9 @@ def auditar_datos_ficha_antes_de_renderizar(ficha_data: Dict[str, object], forma
         errores.append(f"Error #11: EJES de muro sin 'FILA' ni paréntesis (valor actual: '{ejes}', formato 'EJE D-E,4').")
 
     # Error 12: Fecha obligatoria (N14) en formato DD/MM/AAAA y real (D10)
-    if not fecha:
+    if not fecha_es_texto:
+        pass  # T9: ya reportada como error #12 'pendiente de verificar' (no es str)
+    elif not fecha:
         errores.append(f"Error #12: La ficha no tiene fecha ({PENDIENTE}).")
     elif not _es_fecha_ddmmaaaa_valida(fecha):
         errores.append(f"Error #12: La fecha '{fecha}' no cumple el formato obligatorio DD/MM/AAAA.")

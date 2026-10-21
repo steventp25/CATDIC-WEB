@@ -4,3 +4,5 @@ __pycache__/
 *.pdf
 *.jpg
 *.png
+.pytest_cache/
+*.db

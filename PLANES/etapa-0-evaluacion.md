@@ -129,3 +129,75 @@ Archivos revisados:
 - `PLANES/etapa-0-matriz-reglas.md`
 - `PLANES/README.md`
 - `CLAUDE.md`
+
+---
+
+## Evaluación del 21/10/2026 — Ajustes de la auditoría de Gemini (T7 a T10)
+**Veredicto: APROBADO**
+
+Revisé el diff sin commit sobre `e23f29c`: `BACKEND/reglas_ingenieria.py`, `BACKEND/tests/test_reglas_ingenieria.py`, `.gitignore`, `PLANES/etapa-0.md` y `BACKEND/catdic_local.db`, que ya no está en el índice (staged `D`). Las tareas T1 a T6 no las vuelvo a evaluar y no encontré regresiones en ellas.
+
+### Bloqueantes
+- Ninguno.
+
+### Observaciones (no bloquean)
+1. **[reglas_ingenieria.py:192-194] Extremos iguales se aceptan (T7, ejecutor-backend).** `tramo_portico` con F / 10 / 10 devuelve `EJE F ENTRE 10-10`. Un tramo entre el mismo eje no existe. El código ya hacía esto en HEAD y el ejecutor decidió dejarlo así, por eso no bloqueo. Aun así, Gemini podría leerlo como "extremos no coherentes", que el propio T7 dice rechazar. Sugerencia: rechazar `a == b` cuando ninguno de los dos lleva prima (`2-2'` sí es válido). Se lleva a la Mesa de Dudas.
+2. **[reglas_ingenieria.py:94-98] La tolerancia `inf` o `NaN` pasa la validación (T9, ejecutor-backend).** Con `float('inf')` todo sale conforme: `evaluar_medida_acero_obra('COLUMNA', 0.40, 0.20, inf)` devuelve `conforme=True`. Eso daría por buena una medida en silencio. Con `NaN` nunca sale conforme. Hoy el riesgo es bajo porque el JSON estándar no trae `inf` y el texto `"inf"` se rechaza por no ser numérico. Sugerencia: añadir `math.isfinite(tolerancia_m)` a la validación.
+3. **[reglas_ingenieria.py:381-390] `C1 Tramo 2-3` con un pórtico abierto se convierte en `A (2-3)` sin ninguna duda.** El comportamiento ya existía y queda fuera de T8, que solo cubre el caso sin pórtico. Pero no es coherente con la decisión del ejecutor: sin pórtico esa etiqueta va a duda, y con pórtico la parte "C1" se pierde y el elemento se asigna al pórtico A por deducción. Se lleva a la Mesa de Dudas.
+4. **Desfase con CLAUDE.md §4.4.** La plantilla literal sigue diciendo `EJE <LETRA> ENTRE <N>-<N>` (pórtico) y `EJE <LETRA>, ENTRE <N>-<N>` (viga). Ahora el código acepta un eje principal numérico y extremos letra o `MC`. Solo lo respalda el ejemplo de §4.3 (`P1 EJE 1 ENTRE MC-A`) y los ejemplos de Gemini. Para el caso `viga_recta_sobre_letra` con eje principal numérico solo hay pruebas SINTÉTICO "mismo criterio". Recomiendo que Steven actualice §4.4 para que el código y la especificación no se contradigan ante Gemini.
+5. **Menor efecto de D4.** Si se invierten los tres argumentos completos (10 / F / G), el resultado `EJE 10 ENTRE F-G` ahora es válido por diseño. Solo se detectan las inversiones parciales. Es una consecuencia aceptada de T7.
+6. **[reglas_ingenieria.py:574,585] Tolerancia en texto.** El auditor rechaza la tolerancia `"0.005"` como texto, pero acepta textos numéricos en `valor_plano_m` y `cuantia_declarada` (a través de `_a_numero`). Es una decisión conservadora y la doy por válida, aunque es una inconsistencia que conviene documentar en el contrato de la Etapa 3.
+7. **[reglas_ingenieria.py:105]** El texto `"Pendiente de verificación de medida en campo..."` (hallazgo de D1) sigue con mayúscula. No es la constante `PENDIENTE` ni va a "Con dudas" (D1 se da por conforme según la norma CATDIC), así que no viola O10. Lo anoto por si Gemini busca mayúsculas.
+8. **Mensaje doble del auditor.** Si `ejes` no es texto en una losa, salen dos mensajes #11: el de tipo y "debe ser '—'" con valor `''`. Es un poco de ruido, pero no es incorrecto.
+9. **[PLANES/etapa-0.md:193] Texto desactualizado.** "Fuera de alcance" todavía dice que la BD "está trackeado en git… decidir si debe versionarse es otro tema", cuando T10 ya lo resolvió. Además, T7 a T10 dicen "HECHA (sin evaluar)": hay que actualizarlo tras esta evaluación.
+10. **T10.** La BD sigue en el historial de los commits anteriores. Es solo la siembra inicial, así que no reescribiría el historial. En un clon limpio la BD se regenera con `database.py` (`CREATE TABLE IF NOT EXISTS` y la siembra), así que el servidor no depende del archivo versionado.
+
+### Decisiones del ejecutor
+- `MC'` va a pendiente: correcto (no se adivina si es MC o un eje-letra).
+- `MC` rechazado como eje principal: correcto (§4.3 solo lo usa como extremo).
+- `Tramo n-n` sin pórtico abierto, incluida `C1 Tramo 2-3`, va a duda: correcto y conservador (ver observación 3 para el caso con pórtico abierto).
+- Extremos iguales (`2-2`) se siguen aceptando: discutible (observación 1), no bloquea porque no es una regresión.
+- Tolerancia no numérica lanza ValueError: correcto (bool también se rechaza), con la salvedad de la observación 2.
+
+### Criterios de aceptación
+- [x] T7: `tramo_portico` con 1 / MC / A da `EJE 1 ENTRE MC-A`; con 1 / B / D da `EJE 1 ENTRE B-D`; con B / MC / 1 da `EJE B ENTRE MC-1`. Lo verifiqué con `python -c` y con `test_ejes_t7_tramo_portico_principal_letra_o_numero`. `EJE F ENTRE 10-11` y `EJE C, ENTRE 2-3` siguen igual.
+- [x] T7: los extremos inválidos dan "pendiente de verificar": vacíos, `None`, en blanco, `MC-MC`, misma familia que el eje principal, `MC` como principal, `MC'`, `A-B`, `1A`, prima doble, `#` y principal no texto (`1` entero). Cubierto por `test_ejes_t7_extremos_incoherentes_pendiente` (17 casos × 2 casos de EJES). El único caso dudoso es el de extremos iguales (observación 1).
+- [x] T8: ningún grupo sale con `id_sugerido = "TRAMO"` y el grupo lleva `duda` con "pendiente de verificar". Probé `Tramo 2-3`, `C1 Tramo 2-3`, `tramo 2-3` después de que `C1 B4` cierra el pórtico, y `Tramo 2 - 3`. No se pierde ninguna foto (`test_log_t8_tramo_sin_portico_abierto_pendiente`). N6 (tramo repetido abre varios elementos) y D6b siguen en verde.
+- [x] T9 / O8: tolerancia negativa o no numérica lanza `ValueError` con "pendiente de verificar"; la tolerancia 0 es válida y equivale a igualdad exacta; en el auditor da un error #12 controlado, sin excepción.
+- [x] T9 / O9: con dimensiones ≤ 0 el mensaje dice "pendiente de verificar: dimensiones de sección inválidas…" (la prueba ahora usa `match=PENDIENTE`).
+- [x] T9 / O10: el mensaje de recubrimiento va en minúscula y usa la constante `PENDIENTE` (`test_recubrimiento_t9_mensaje_en_minuscula`).
+- [x] T9: si `fecha` llega como `date`, `int` o `float`, sale un solo error #12 con "pendiente de verificar", sin `TypeError`. Extendido a `tipo_elemento`, `ejes`, `nombre_proyecto` y `observaciones_texto` en los 3 formatos.
+- [x] T9: hay pruebas nuevas para los tres casos y la suite queda en verde (306 pruebas).
+- [x] T10: `.gitignore` incluye `.pytest_cache/` (línea 7) y `*.db` (línea 8). `git ls-files BACKEND/catdic_local.db` sale vacío. `git check-ignore` confirma que el archivo queda ignorado. El archivo sigue en disco (65 536 bytes).
+- [x] O4: los docstrings están actualizados (`formatear_campo_ejes`, `agrupar_log_fotografico_visita`, `evaluar_medida_acero_obra` y el auditor documentan T7 a T9).
+
+### Reglas del CLAUDE.md
+- **Regla de Oro #1:** no hay datos de ingeniería inventados. Las constantes y parámetros nuevos de las pruebas llevan `# SINTÉTICO` o `# NORMA: CLAUDE.md §4.3/§4.4 / ejemplo de Gemini`. `TOKEN_MURO_CONTENCION = "MC"` es una convención de nomenclatura de §4.3, no un dato de diseño. Nada se guarda en la BD.
+- **Decisiones de Steven:** se mantienen las cuatro. D1 (sin medida, OBRA = plano y conforme) sigue intacto en la línea 99. N6 (tramo repetido) en verde. Platea como área `(A-B),(1-2)` y 0.075 m sin cambios (verificado: la platea con área válida da 0 errores). La prima sigue funcionando: `EJE A' ENTRE 1'-2` y `EJE 1' ENTRE A'-MC`.
+- **§4.4:** las losas siguen dando `—`; cruce, muro y área no cambiaron.
+- **Errores aplicables (§6):** #11 (ejes) reforzado; #12 (fecha, tolerancia de OBRA, cuantía) reforzado. El #8, #9 y #10 ahora toleran campos que no son texto sin reventar. No aplican #1 a #7, #13 a #18 (no se tocó ningún generador).
+- **Formatos, firmas y §5:** no hay cambios en cabeceras ni rótulos, no se fabrica ninguna firma y no se toca el versionado ni las rutas.
+
+### Pruebas ejecutadas
+- `cd BACKEND && python -m pytest -q` da `306 passed in 0.55s`.
+- `cd BACKEND && python -c "import main"` da `import main OK`.
+- `git ls-files BACKEND/catdic_local.db` sale vacío.
+- `git check-ignore -v BACKEND/catdic_local.db BACKEND/.pytest_cache/` da `.gitignore:8:*.db` y `.gitignore:7:.pytest_cache/`.
+- `ls -la BACKEND/catdic_local.db` da `65536 Oct 21 10:29` (sigue en disco).
+- Busqué en `git ls-files` archivos `.db`, `.pdf`, `.jpg`, `.png`, `.env` y `.pytest_cache`: no hay ninguno. El índice solo tiene staged `D BACKEND/catdic_local.db`; no hay archivos sin trackear fuera de los ignorados.
+- En el diff de pruebas no se eliminó ningún caso: las líneas quitadas son solo docstrings, la cabecera y un `pytest.raises` que pasó a `match=PENDIENTE`.
+- Casos límite con `python -B -c` (solo lectura): `F/10/10` da `EJE F ENTRE 10-10` (obs. 1); tolerancia `inf` da `conforme=True` (obs. 2); `P eje A` seguido de `C1 Tramo 2-3` da `A (2-3)` sin duda (obs. 3); `10/F/G` da `EJE 10 ENTRE F-G` (obs. 5).
+
+### Pendientes de verificar (para la Mesa de Dudas)
+- ¿Un tramo con extremos iguales sin prima (`EJE F ENTRE 10-10`) debe ir a "pendiente de verificar"?
+- ¿Una etiqueta `C1 Tramo 2-3` con un pórtico abierto debe ir a duda en lugar de asignarse como tramo de ese pórtico?
+- ¿Steven actualiza CLAUDE.md §4.4 para recoger el eje principal numérico y los extremos `MC` en el pórtico y la viga recta, que hoy solo respalda el ejemplo de §4.3?
+- ¿La tolerancia de la visita puede llegar como texto (`"0.005"`), o siempre como número? Hoy el texto se rechaza.
+- Siguen abiertas de T5: ¿30 MB son 30 000 000 bytes o 30 MiB? ¿Se acepta la coma decimal (`0,40`)?
+
+Archivos revisados:
+- `BACKEND/reglas_ingenieria.py`
+- `BACKEND/tests/test_reglas_ingenieria.py`
+- `.gitignore`
+- `PLANES/etapa-0.md`
+- `BACKEND/database.py` (solo para confirmar que la BD se regenera)
