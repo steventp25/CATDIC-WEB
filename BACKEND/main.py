@@ -6,6 +6,7 @@ from typing import List, Optional
 import json
 from pathlib import Path
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
+from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
 app = FastAPI(title="CATDIC Web API", version="2.0.0")
 
@@ -97,20 +98,19 @@ def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
         
     return {"status": "ok", "mensaje": "Proyecto actualizado correctamente."}
 
+@app.post("/api/dropbox/sync")
+def sincronizar_dropbox(proyecto_id: Optional[str] = None):
+    """Lee Dropbox (solo lectura) y sincroniza la cola de visitas (Etapa 1 · T5)."""
+    try:
+        return sincronizar(proyecto_id)
+    except ProyectoNoEncontrado:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+
+MENSAJE_PROCESAR_COLA_DESACTIVADO = (
+    "Procesar Cola se habilita en la Etapa 3 (generadores). No se cambió ninguna visita."
+)
+
 @app.post("/api/visitas/procesar-cola")
-def simular_procesar_cola():
-    """Simula el motor local procesando las visitas en cola desde Dropbox."""
-    conn = get_connection()
-    # Buscar visitas en cola o sin procesar
-    cursor = conn.execute("SELECT * FROM visitas WHERE estado IN ('Sin procesar', 'En cola')")
-    visitas_pendientes = cursor.fetchall()
-    
-    procesadas = 0
-    for v in visitas_pendientes:
-        # Aquí se conectará el motor de reglas y generadores STP/HV
-        conn.execute("UPDATE visitas SET estado = 'En revisión', actualizado = CURRENT_TIMESTAMP WHERE id = ?", (v["id"],))
-        procesadas += 1
-        
-    conn.commit()
-    conn.close()
-    return {"status": "ok", "procesadas": procesadas, "mensaje": f"Se procesaron {procesadas} visitas de la cola."}
+def procesar_cola():
+    """Desactivado (Etapa 1 · T9): se conectará a los generadores en la Etapa 3. No toca la BD."""
+    raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
