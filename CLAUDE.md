@@ -126,6 +126,8 @@ Ya existen y están corriendo en la PC de Steven:
 
 &#x20;  - Un pórtico no tiene ID único; se identifica por su eje (`P1`, `PA`) y \*\*cada tramo entre ejes es un elemento singular con su propia ficha\*\* (ej. `A (2-3)`, `P1 EJE 1 ENTRE MC-A`).
 
+&#x20;  - \*\*Excepción (decisión de Steven):\*\* un mismo tramo puede abrir varios elementos (varias fichas) en el log de la visita cuando el elemento es suficientemente grande o complejo; el sistema no los fusiona.
+
 &#x20;  - El ancho del pórtico se obtiene de los \*callouts\* de sección (`S1`, `S2`...) verificando el control cruzado: `altura sección S + espesor losa contigua = altura total Hv en elevación`.
 
 4\. \*\*Formato Estricto del Campo `EJES`:\*\*
@@ -138,13 +140,19 @@ Ya existen y están corriendo en la PC de Steven:
 
 &#x20;  - Tramo de pórtico: `EJE <LETRA> ENTRE <N>-<N>` (ej. `EJE F ENTRE 10-11`).
 
-&#x20;  - \*\*Losas (todas) y vigas sin eje-letra:\*\* SIEMPRE `—` (guion largo, sin excepción).
+&#x20;  - \*\*Losas (todas) y vigas sin eje-letra:\*\* SIEMPRE `—` (guion largo, sin excepción). En las visitas no se ubican las losas, porque en planta hay una sola de cada una por entrepiso.
+
+&#x20;  - \*\*Platea:\*\* se define como un área: `(<LETRA>-<LETRA>),(<N>-<N>)` (ej. `(A-B),(1-2)`). No lleva `—`.
+
+&#x20;  - \*\*Ejes con prima:\*\* existen ejes como `A'` (y números como `2'`); se escriben tal cual (ej. `EJE A'-1`), con comilla recta `'`.
+
+&#x20;  - \*\*Ejes escritos en la visita:\*\* si el elemento en la visita dice solo `A1` o `1A`, significa que está en el cruce de los ejes `A` y `1` (el orden letra/número suele venir cruzado) → `EJE A-1`. Lo que no se pueda leer así sin adivinar queda `"pendiente de verificar"`.
 
 5\. \*\*Física de Obra y Recubrimientos:\*\*
 
 &#x20;  - En obra se mide sobre el acero. Para comparar con la dimensión de concreto del plano se suma `2 × recubrimiento`:
 
-&#x20;    - Zapatas y muros de contención: \*\*0.075 m\*\* por lado (+0.15 m total).
+&#x20;    - Zapatas, plateas (cimentación) y muros de contención: \*\*0.075 m\*\* por lado (+0.15 m total).
 
 &#x20;    - Columnas, vigas, riostras y muros H.A.: \*\*0.040 m\*\* por lado (+0.08 m total).
 
