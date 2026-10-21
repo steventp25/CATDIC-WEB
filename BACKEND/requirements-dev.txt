@@ -1,0 +1,2 @@
+# Dependencias de desarrollo (pruebas). Uso: python -m pip install -r requirements-dev.txt
+pytest>=9.1
