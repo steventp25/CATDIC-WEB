@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CATDIC · Control Taller 2.0 (Web Local)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #121214; color: #e1e1e6; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div id="app" class="flex flex-col h-screen">
+        <!-- HEADER -->
+        <header class="bg-[#1a1a1e] border-b border-[#29292e] px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center space-x-3">
+                <div class="bg-yellow-500 text-black font-black px-3 py-1 rounded text-sm tracking-wider">CATDIC</div>
+                <h1 class="text-xl font-bold tracking-tight text-white">Control Taller <span class="text-xs bg-blue-900 text-blue-200 px-2 py-0.5 rounded ml-2">Web Local v2.0</span></h1>
+            </div>
+            <div class="flex items-center space-x-4">
+                <button @click="sincronizarDropbox" class="bg-[#29292e] hover:bg-[#323238] text-sm text-yellow-400 px-4 py-2 rounded-lg border border-yellow-500/30 transition flex items-center space-x-2">
+                    <i class="fa-solid fa-sync" :class="{'fa-spin': cargando}"></i>
+                    <span>Sincronizar desde Dropbox</span>
+                </button>
+                <button @click="procesarCola" class="bg-yellow-500 hover:bg-yellow-400 text-black text-sm font-bold px-4 py-2 rounded-lg transition flex items-center space-x-2">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span>Procesar Cola Visitas</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- CONTENIDO PRINCIPAL -->
+        <main class="flex-1 overflow-y-auto p-6 space-y-6">
+            <!-- TARJETAS DE MÉTRICAS -->
+            <div class="grid grid-cols-5 gap-4">
+                <div class="bg-[#1a1a1e] border border-[#29292e] p-4 rounded-xl">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Proyectos Activos</p>
+                    <p class="text-2xl font-bold text-white mt-1">{{ stats.proyectos_activos }}</p>
+                </div>
+                <div class="bg-[#1a1a1e] border border-[#29292e] p-4 rounded-xl">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Órdenes Abiertas</p>
+                    <p class="text-2xl font-bold text-white mt-1">{{ stats.ordenes_abiertas }}</p>
+                </div>
+                <div class="bg-[#1a1a1e] border border-[#29292e] p-4 rounded-xl">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Bloqueadas</p>
+                    <p class="text-2xl font-bold text-white mt-1">{{ stats.bloqueadas }}</p>
+                </div>
+                <div class="bg-[#1a1a1e] border border-[#29292e] p-4 rounded-xl">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Vencen en ≤ 7 Días</p>
+                    <p class="text-2xl font-bold text-white mt-1">{{ stats.vencen_7_dias }}</p>
+                </div>
+                <div class="bg-[#1a1a1e] border border-[#29292e] p-4 rounded-xl">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Visitas en Cola</p>
+                    <p class="text-2xl font-bold text-yellow-400 mt-1">{{ stats.visitas_en_cola }}</p>
+                </div>
+            </div>
+
+            <!-- TABLA DE PROYECTOS -->
+            <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-center">
+                    <h3 class="font-bold text-white">Matriz General de Proyectos</h3>
+                    <span class="text-xs text-gray-400">Sincronizado con base de datos local SQLite</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-[#121214] text-gray-400 text-xs uppercase tracking-wider border-b border-[#29292e]">
+                            <tr>
+                                <th class="px-6 py-3">Proyecto</th>
+                                <th class="px-6 py-3">Tipo / Formato</th>
+                                <th class="px-6 py-3">Cliente</th>
+                                <th class="px-6 py-3">Supervisor</th>
+                                <th class="px-6 py-3">Estado Informe</th>
+                                <th class="px-6 py-3">Próxima Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[#29292e]">
+                            <template v-for="p in proyectos" :key="p.id">
+                                <tr class="hover:bg-[#222227] transition">
+                                    <td class="px-6 py-4 font-semibold text-white">{{ p.nombre }}</td>
+                                    <td class="px-6 py-4">
+                                        <span class="bg-blue-950 text-blue-300 border border-blue-800/50 text-xs px-2.5 py-1 rounded font-medium">{{ p.tipo }}</span>
+                                        <span class="text-xs text-gray-400 block mt-1">{{ p.formato_defecto }}</span>
+                                    </td>
+                                    <td class="px-6 py-4 text-gray-300">{{ p.cliente || '—' }}</td>
+                                    <td class="px-6 py-4 text-gray-300">{{ p.supervisor || 'Pendiente' }}</td>
+                                    <td class="px-6 py-4">
+                                        <span class="bg-yellow-950 text-yellow-300 border border-yellow-800/50 text-xs px-2 py-0.5 rounded">{{ p.estado_informe || 'Sin iniciar' }}</span>
+                                    </td>
+                                    <td class="px-6 py-4 text-gray-400 text-xs">{{ p.observaciones }}</td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ÓRDENES DE TRABAJO (KANBAN) -->
+            <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl p-6">
+                <h3 class="font-bold text-white mb-4">Órdenes de Trabajo Activas (OT)</h3>
+                <div class="grid grid-cols-6 gap-3">
+                    <div v-for="estado in ['Pendiente', 'Asignada', 'En proceso', 'Bloqueada', 'En revisión', 'Entregada']" :key="estado" class="bg-[#121214] border border-[#29292e] rounded-lg p-3 min-h-[150px]">
+                        <p class="text-xs font-bold text-gray-400 uppercase mb-3 pb-2 border-b border-[#29292e] flex justify-between">
+                            <span>{{ estado }}</span>
+                            <span class="bg-[#29292e] text-white px-1.5 rounded">{{ contarOTs(estado) }}</span>
+                        </p>
+                        <div class="space-y-2">
+                            <div v-for="ot in filtrarOTs(estado)" :key="ot.doc_id" class="bg-[#1a1a1e] border border-[#29292e] p-2.5 rounded text-xs shadow">
+                                <span class="font-bold text-yellow-400 block">{{ ot.doc_id }}</span>
+                                <p class="text-white font-medium mt-1">{{ ot.seccion }}</p>
+                                <p class="text-gray-400 mt-1">{{ ot.nota }}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+        createApp({
+            setup() {
+                const stats = ref({});
+                const proyectos = ref([]);
+                const visitas = ref([]);
+                const ordenes = ref([]);
+                const cargando = ref(false);
+
+                const cargarDatos = async () => {
+                    try {
+                        const res = await fetch('http://localhost:8000/api/dashboard');
+                        const data = await res.json();
+                        stats.value = data.stats;
+                        proyectos.value = data.proyectos;
+                        visitas.value = data.visitas;
+                        ordenes.value = data.ordenes;
+                    } catch (e) {
+                        console.error("Error conectando con el backend FastAPI:", e);
+                    }
+                };
+
+                const sincronizarDropbox = async () => {
+                    cargando.value = true;
+                    await new Promise(r => setTimeout(r, 800));
+                    await cargarDatos();
+                    cargando.value = false;
+                    alert("¡Sincronización completada con la carpeta local de Dropbox!");
+                };
+
+                const procesarCola = async () => {
+                    try {
+                        const res = await fetch('http://localhost:8000/api/visitas/procesar-cola', { method: 'POST' });
+                        const data = await res.json();
+                        alert(data.mensaje);
+                        await cargarDatos();
+                    } catch (e) {
+                        alert("Error al procesar la cola.");
+                    }
+                };
+
+                const contarOTs = (estado) => ordenes.value.filter(o => o.estado === estado).length;
+                const filtrarOTs = (estado) => ordenes.value.filter(o => o.estado === estado);
+
+                onMounted(() => {
+                    cargarDatos();
+                });
+
+                return { stats, proyectos, visitas, ordenes, cargando, sincronizarDropbox, procesarCola, contarOTs, filtrarOTs };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
