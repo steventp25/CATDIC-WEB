@@ -1,2 +1,5 @@
-# Dependencias de desarrollo (pruebas). Uso: python -m pip install -r requirements-dev.txt
+# Dependencias de desarrollo (pruebas). Intérprete del proyecto: Python 3.14 (decisión de Steven, P6).
+# Uso: py -3.14 -m pip install -r requirements-dev.txt   (no usar "python": es 3.15 sin dependencias)
 pytest>=9.1
+# Requerido por fastapi.testclient para probar endpoints
+httpx>=0.28.1
