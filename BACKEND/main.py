@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
+from mesa_dudas import router as router_mesa_dudas
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
 RUTA_FRONTEND = Path(__file__).resolve().parent.parent / "FRONTEND"
@@ -118,6 +119,9 @@ MENSAJE_PROCESAR_COLA_DESACTIVADO = (
 def procesar_cola():
     """Desactivado (Etapa 1 · T9): se conectará a los generadores en la Etapa 3. No toca la BD."""
     raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
+
+
+app.include_router(router_mesa_dudas)
 
 
 # Se monta al final para que /api/* conserve prioridad. Un solo servidor local entrega
