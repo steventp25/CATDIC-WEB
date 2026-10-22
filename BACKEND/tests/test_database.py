@@ -560,3 +560,129 @@ def test_columna_origen_se_anade_una_sola_vez_y_conserva_filas(bd_temporal):
         assert _n_auditoria_origen(conn) == 1
     finally:
         conn.close()
+
+
+# ---------- Etapa 2 · T1 — elementos_diseno: UNIQUE, fuente_json, pendientes_json ----------
+
+def _crear_bd_diseno_vieja(ruta: Path, con_fila: bool = True):
+    """BD con 'elementos_diseno' del esquema anterior a la Etapa 2 (SINTÉTICO)."""
+    conn = sqlite3.connect(ruta)
+    conn.executescript("""
+        CREATE TABLE proyectos (id TEXT PRIMARY KEY);
+        CREATE TABLE elementos_diseno (
+            uid TEXT PRIMARY KEY,
+            proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            id_elemento TEXT NOT NULL, tipo_elemento TEXT NOT NULL,
+            nivel_rango TEXT NOT NULL, ejes TEXT NOT NULL,
+            hoja_plano_origen TEXT NOT NULL, archivo_plano_origen TEXT NOT NULL,
+            datos_diseno_json TEXT NOT NULL, estado_campos_json TEXT NOT NULL,
+            recorte_planta_json TEXT DEFAULT '{}', recorte_detalle_json TEXT DEFAULT '{}',
+            actualizado TEXT NOT NULL
+        );
+        CREATE TABLE elementos_visita (
+            uid TEXT PRIMARY KEY,
+            elemento_diseno_uid TEXT REFERENCES elementos_diseno(uid)
+        );
+        CREATE TABLE auditoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, usuario TEXT,
+            modulo TEXT, accion TEXT, entidad_id TEXT, detalle_json TEXT
+        );
+        INSERT INTO proyectos VALUES ('SINTETICO-P');
+    """)
+    if con_fila:
+        conn.execute(
+            "INSERT INTO elementos_diseno VALUES ('SINTETICO-U1','SINTETICO-P','C1','COLUMNA',"
+            "'S-4','EJE F-11','ES-05','sintetico.pdf','{}','{}','{}','{}','2026-10-22')")
+        conn.execute("INSERT INTO elementos_visita VALUES ('SINTETICO-EV1','SINTETICO-U1')")
+    conn.commit()
+    conn.close()
+
+
+def _n_audit_diseno(conn):
+    return conn.execute(
+        "SELECT COUNT(*) FROM auditoria WHERE accion='MIGRACION_ELEMENTOS_DISENO'").fetchone()[0]
+
+
+def _insertar_diseno(conn, uid, id_elemento="C2", nivel="S-4", ejes="EJE F-12"):
+    conn.execute(
+        "INSERT INTO elementos_diseno (uid, proyecto_id, id_elemento, tipo_elemento, nivel_rango,"
+        " ejes, hoja_plano_origen, archivo_plano_origen, datos_diseno_json, estado_campos_json,"
+        " actualizado) VALUES (?, 'SINTETICO-P', ?, 'COLUMNA', ?, ?, 'ES-05', 's.pdf', '{}', '{}', 'x')",
+        (uid, id_elemento, nivel, ejes))
+
+
+def test_migrar_diseno_conserva_filas_fk_respalda_y_audita(bd_temporal):
+    _crear_bd_diseno_vieja(bd_temporal)
+    resultado = database.migrar_elementos_diseno()
+    assert resultado["migrada"] is True
+    assert Path(resultado["respaldo"]).exists()
+    assert resultado["columnas_nuevas"] == ["fuente_json", "pendientes_json"]
+    conn = database.get_connection()
+    try:
+        fila = conn.execute("SELECT * FROM elementos_diseno WHERE uid='SINTETICO-U1'").fetchone()
+        assert fila["id_elemento"] == "C1" and fila["ejes"] == "EJE F-11"
+        assert fila["fuente_json"] == "{}" and fila["pendientes_json"] == "[]"
+        assert conn.execute("SELECT elemento_diseno_uid FROM elementos_visita").fetchone()[0] == "SINTETICO-U1"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert _n_audit_diseno(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_migrar_diseno_dos_veces_no_cambia_nada(bd_temporal):
+    _crear_bd_diseno_vieja(bd_temporal)
+    database.migrar_elementos_diseno()
+    respaldos = _respaldos(bd_temporal.parent, bd_temporal.stem)
+    assert database.migrar_elementos_diseno() == {
+        "migrada": False, "motivo": "ya migrada", "respaldo": None}
+    assert _respaldos(bd_temporal.parent, bd_temporal.stem) == respaldos
+    conn = database.get_connection()
+    try:
+        assert _n_audit_diseno(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_unique_diseno_rechaza_duplicado_en_bd_migrada_y_en_bd_nueva(bd_temporal, tmp_path, monkeypatch):
+    _crear_bd_diseno_vieja(bd_temporal)
+    database.migrar_elementos_diseno()
+    conn = database.get_connection()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            _insertar_diseno(conn, "SINTETICO-U2", "C1", "S-4", "EJE F-11")  # duplicado de U1
+        _insertar_diseno(conn, "SINTETICO-U3", "C1", "S-3", "EJE F-11")      # otro nivel: permitido
+    finally:
+        conn.close()
+
+    nueva = tmp_path / "nueva.db"
+    monkeypatch.setenv(config.ENV_DB_PATH, str(nueva))
+    database.inicializar_bd()
+    conn = database.get_connection()
+    try:
+        conn.execute("INSERT INTO proyectos (id, nombre, tipo, formato_defecto, actualizado)"
+                     " VALUES ('SINTETICO-P','x','Supervisión','STP-MIVED','x')")
+        _insertar_diseno(conn, "A1")
+        with pytest.raises(sqlite3.IntegrityError):
+            _insertar_diseno(conn, "A2")
+        assert _n_audit_diseno(conn) == 0  # BD nueva: sin migración ni respaldo
+    finally:
+        conn.close()
+    assert _respaldos(nueva.parent, nueva.stem) == []
+
+
+def test_migrar_diseno_con_duplicados_previos_revierte(bd_temporal):
+    _crear_bd_diseno_vieja(bd_temporal)
+    conn = sqlite3.connect(bd_temporal)
+    conn.execute("INSERT INTO elementos_diseno VALUES ('SINTETICO-U9','SINTETICO-P','C1','COLUMNA',"
+                 "'S-4','EJE F-11','ES-05','s.pdf','{}','{}','{}','{}','x')")
+    conn.commit()
+    conn.close()
+    with pytest.raises(sqlite3.IntegrityError):
+        database.migrar_elementos_diseno()
+    conn = sqlite3.connect(bd_temporal)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(elementos_diseno)")}
+        assert "fuente_json" not in cols
+        assert conn.execute("SELECT COUNT(*) FROM elementos_diseno").fetchone()[0] == 2
+    finally:
+        conn.close()
