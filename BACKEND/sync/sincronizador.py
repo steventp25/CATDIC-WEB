@@ -63,6 +63,10 @@ MOTIVO_SIN_PDF = "la carpeta no tiene PDF de la visita"
 ORIGEN_ESTADO_P3 = "sync_p3"            # Procesada: un único STP con su fecha y su clase
 ORIGEN_ESTADO_DUDAS = "sync_dudas"      # Con dudas: campos pendientes, sin PDF o P3 ambigua
 ORIGEN_ESTADO_SIN_STP = "sync_sin_stp"  # Sin procesar: ningún STP válido de su fecha
+ORIGEN_ESTADO_MESA = "mesa_dudas"       # decidido por Steven en la Mesa de Dudas
+RESPUESTA_SYNC = "resuelta por sincronización"  # respuesta_usuario de la duda archivos_json que cierra el sync
+ACCION_CERRAR_ARCHIVOS = "CERRAR_DUDA_ARCHIVOS"
+ACCION_REABRIR_ARCHIVOS = "REABRIR_DUDA_ARCHIVOS"
 REGLA_P3 = "estricta"                   # marca de que la visita ya se evaluó con la regla de T8
 
 _RE_CLASE_INFORME = re.compile(
@@ -234,12 +238,84 @@ def _duda_existe(conn, visita_id: str, campo: str, categoria: str) -> bool:
 
 
 def _campos_resueltos(conn, visita_id: str) -> Set[str]:
-    """Campos que Steven ya respondió en la Mesa de Dudas (duda con resuelta = 1)."""
+    """Campos que Steven ya respondió en la Mesa de Dudas.
+
+    Cuenta solo las DUDA_BLOQUEANTE resueltas: un hallazgo revisado no congela el campo (T4b a).
+    Tampoco cuenta la duda archivos_json que cerró el propio sync (T4b b): no la respondió Steven.
+    """
     filas = conn.execute("""
         SELECT DISTINCT campo_afectado FROM dudas_y_hallazgos
-        WHERE visita_id = ? AND resuelta = 1
-    """, (visita_id,)).fetchall()
+        WHERE visita_id = ? AND resuelta = 1 AND categoria = ?
+          AND NOT (campo_afectado = ? AND respuesta_usuario = ?)
+    """, (visita_id, DUDA, CAMPO_ARCHIVOS, RESPUESTA_SYNC)).fetchall()
     return {f[0] for f in filas}
+
+
+def estado_tras_cerrar_bloqueantes(conn, visita_id: str, estado_actual: str, origen: Dict) -> Dict:
+    """
+    Regla común de la Mesa y del sync: una visita 'Con dudas' que se queda sin DUDA_BLOQUEANTE
+    abiertas pasa a 'Sin procesar', o al estado que Steven eligió antes (origen['estado_mesa']).
+    Nunca pasa a 'Procesada' por su cuenta. Devuelve las columnas a cambiar ({} si no cambia).
+    Puede marcar origen['estado'] (el dict se modifica).
+    """
+    if estado_actual != ESTADO_CON_DUDAS:
+        return {}
+    quedan = conn.execute("""SELECT COUNT(*) FROM dudas_y_hallazgos
+                             WHERE visita_id = ? AND categoria = ? AND resuelta = 0""",
+                          (visita_id, DUDA)).fetchone()[0]
+    if quedan:
+        return {}
+    decidido = origen.get("estado_mesa") if isinstance(origen.get("estado_mesa"), dict) else {}
+    nuevo = decidido.get("estado", ESTADO_SIN_PROCESAR)
+    if decidido:
+        origen["estado"] = ORIGEN_ESTADO_MESA
+    salida = {"stp": decidido["stp"]} if nuevo == ESTADO_PROCESADA else {}
+    return {"estado": nuevo, "salida_json": _json(salida)}
+
+
+def _sincronizar_duda_archivos(conn, fila: sqlite3.Row, visita: Dict, origen: Dict) -> Tuple[Dict, bool]:
+    """
+    T4b (b): con PDF en la carpeta, cierra la duda archivos_json (resuelta=1, respuesta
+    'resuelta por sincronización', auditada). Si el PDF vuelve a faltar, reabre solo la que
+    cerró el sync. Devuelve (cambios de visitas, hubo_cambio_en_dudas).
+    """
+    visita_id = fila["id"]
+    cambios: Dict = {}
+    hubo = False
+    if not visita["sin_pdf"]:
+        abiertas = conn.execute("""SELECT id FROM dudas_y_hallazgos WHERE visita_id = ?
+                                   AND campo_afectado = ? AND categoria = ? AND resuelta = 0""",
+                                (visita_id, CAMPO_ARCHIVOS, DUDA)).fetchall()
+        for i, d in enumerate(abiertas):
+            ahora = _ahora()
+            conn.execute("""UPDATE dudas_y_hallazgos SET resuelta = 1, respuesta_usuario = ?,
+                            resuelto_en = ? WHERE id = ?""", (RESPUESTA_SYNC, ahora, d["id"]))
+            hubo = True
+            if i == len(abiertas) - 1:
+                cambios = estado_tras_cerrar_bloqueantes(conn, visita_id, fila["estado"], origen)
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (ahora, USUARIO, MODULO_AUDITORIA, ACCION_CERRAR_ARCHIVOS, str(d["id"]),
+                  _json({"duda_id": d["id"], "visita_id": visita_id, "campo": CAMPO_ARCHIVOS,
+                         "estado_anterior": fila["estado"],
+                         "estado_nuevo": cambios.get("estado", fila["estado"])})))
+    else:
+        cerradas = conn.execute("""SELECT id FROM dudas_y_hallazgos WHERE visita_id = ?
+                                   AND campo_afectado = ? AND categoria = ? AND resuelta = 1
+                                   AND respuesta_usuario = ?""",
+                                (visita_id, CAMPO_ARCHIVOS, DUDA, RESPUESTA_SYNC)).fetchall()
+        for d in cerradas:
+            conn.execute("""UPDATE dudas_y_hallazgos SET resuelta = 0, respuesta_usuario = '',
+                            resuelto_en = '' WHERE id = ?""", (d["id"],))
+            hubo = True
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (_ahora(), USUARIO, MODULO_AUDITORIA, ACCION_REABRIR_ARCHIVOS, str(d["id"]),
+                  _json({"duda_id": d["id"], "visita_id": visita_id, "campo": CAMPO_ARCHIVOS,
+                         "motivo": "la carpeta volvió a quedar sin PDF"})))
+    return cambios, hubo
 
 
 def _insertar_duda(conn, proyecto_id: str, visita_id: str, categoria: str,
@@ -422,8 +498,12 @@ def _actualizar_visita_existente(conn, proyecto: Dict, fila: sqlite3.Row,
     origen_viejo = _leer_origen(fila)
     origen = {**origen_viejo, **_origen_fecha_clase(visita["interpretacion"], resueltos)}
 
-    estado = fila["estado"]
-    if any(d["categoria"] == DUDA for d in insertadas) and estado in ESTADOS_ABIERTOS \
+    # T4b (b): la duda archivos_json se cierra sola (o se reabre) según haya o no PDF
+    cambios_archivos, dudas_tocadas = _sincronizar_duda_archivos(conn, fila, visita, origen)
+    cambios.update(cambios_archivos)
+    estado = cambios.get("estado", fila["estado"])
+    reabierta = dudas_tocadas and visita["sin_pdf"]
+    if (any(d["categoria"] == DUDA for d in insertadas) or reabierta) and estado in ESTADOS_ABIERTOS \
             and estado != ESTADO_CON_DUDAS:
         cambios["estado"] = estado = ESTADO_CON_DUDAS
         origen["estado"] = ORIGEN_ESTADO_DUDAS
@@ -434,7 +514,7 @@ def _actualizar_visita_existente(conn, proyecto: Dict, fila: sqlite3.Row,
         sets = ", ".join(f"{k} = ?" for k in cambios)
         conn.execute(f"UPDATE visitas SET {sets}, actualizado = ? WHERE id = ?",
                      (*cambios.values(), _ahora(), visita_id))
-    return bool(cambios) or bool(insertadas), estado, insertadas
+    return bool(cambios) or bool(insertadas) or dudas_tocadas, estado, insertadas
 
 
 # ---------- Corrección única de la regla laxa de T5 (T8) ----------

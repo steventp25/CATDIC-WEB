@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from database import get_connection
 from reglas_ingenieria import PENDIENTE, _es_fecha_ddmmaaaa_valida
 from sync.escaner_dropbox import SUBRUTA_INFORMES_PROCESADOS
-from sync.parser_visitas import CAMPO_CLASE, CAMPO_FECHA, CLASE_COMPLETIVO, CLASE_MIXTA, CLASE_PARCIAL
+from sync.parser_visitas import CAMPO_CLASE, CAMPO_FECHA, CLASE_COMPLETIVO, CLASE_PARCIAL
 from sync.sincronizador import (
     CAMPO_ARCHIVOS,
     CAMPO_ESTADO,
@@ -26,17 +26,20 @@ from sync.sincronizador import (
     ESTADO_PROCESADA,
     ESTADO_SIN_PROCESAR,
     HALLAZGO,
+    ORIGEN_ESTADO_MESA,
+    estado_tras_cerrar_bloqueantes,
 )
 
 MODULO_AUDITORIA = "MESA_DUDAS"
 ACCION_AUDITORIA = "RESPONDER_DUDA"
 USUARIO = "steven"
-ORIGEN_MESA = "mesa_dudas"
+ORIGEN_MESA = ORIGEN_ESTADO_MESA
 
-CLASES_VALIDAS = (CLASE_PARCIAL, CLASE_COMPLETIVO, CLASE_MIXTA)
+# T4b (e), decisión de Steven: la Mesa no acepta Mixta; solo Parcial o Completivo
+CLASES_VALIDAS = (CLASE_PARCIAL, CLASE_COMPLETIVO)
 RESPUESTA_CORRESPONDE = "corresponde"
 RESPUESTA_NO_CORRESPONDE = "no corresponde"
-MENSAJE_ARCHIVOS = ("Esta duda no se resuelve con texto: se resuelve al sincronizar "
+MENSAJE_ARCHIVOS = ("Esta duda no se responde con texto: se cierra sola al sincronizar "
                     "cuando el PDF esté en la carpeta de la visita.")
 
 
@@ -162,7 +165,13 @@ def _validar_estado(respuesta: str, stp: Optional[List[str]], origen: dict, carp
     if not (carpeta_dropbox or "").strip():
         raise RespuestaInvalida(f"El proyecto no tiene carpeta_dropbox: {PENDIENTE}.")
     carpeta = Path(carpeta_dropbox) / SUBRUTA_INFORMES_PROCESADOS
-    return {"estado": ESTADO_PROCESADA, "stp": [str(carpeta / nombre) for nombre in elegido]}
+    rutas = [carpeta / nombre for nombre in elegido]
+    # T4b (d): comprobación en solo lectura de que el STP sigue en 2.DATA PROCESADA
+    faltan = [r.name for r in rutas if not r.exists()]
+    if faltan:
+        raise RespuestaInvalida(
+            f"El STP ya no está en INFORMES\\2.DATA PROCESADA: {', '.join(faltan)}. No se cambió nada.")
+    return {"estado": ESTADO_PROCESADA, "stp": [str(r) for r in rutas]}
 
 
 # ---------- Escritura ----------
@@ -206,14 +215,9 @@ def _responder(conn, duda_id: int, respuesta: str, stp: Optional[List[str]]) -> 
     anterior = nuevo = None
 
     if duda["categoria"] == HALLAZGO:
-        # Se marca revisado sin aplicar valor. Si hay una duda bloqueante abierta del mismo campo
-        # no se permite: el sincronizador trataría ese campo como respondido y dejaría de pedirlo.
-        if visita_id and conn.execute("""
-                SELECT 1 FROM dudas_y_hallazgos WHERE visita_id = ? AND campo_afectado = ?
-                AND categoria = ? AND resuelta = 0""", (visita_id, campo, DUDA)).fetchone():
-            raise DudaYaResuelta(
-                f"Hay una duda bloqueante abierta sobre '{campo}' en esta visita: respóndela "
-                "primero (marcar revisado el hallazgo haría que el sistema deje de pedirla).")
+        # Se marca revisado sin aplicar valor. Ya no hace falta bloquearlo cuando hay una duda
+        # bloqueante abierta del mismo campo: desde T4b el sync solo cuenta bloqueantes resueltas.
+        pass
     elif duda["id_elemento"]:
         pass  # Duda de elemento: solo se guarda la respuesta, no se aplica
     elif campo == CAMPO_ARCHIVOS:
@@ -254,17 +258,9 @@ def _responder(conn, duda_id: int, respuesta: str, stp: Optional[List[str]]) -> 
         estado_nuevo = estado_anterior
         # Visita sin bloqueantes abiertos: Sin procesar, o el estado que Steven eligió.
         # Nunca Procesada por su cuenta: solo si Steven respondió "corresponde" y citó el STP.
-        quedan = conn.execute("""SELECT COUNT(*) FROM dudas_y_hallazgos
-                                 WHERE visita_id = ? AND categoria = ? AND resuelta = 0""",
-                              (visita_id, DUDA)).fetchone()[0]
-        if estado_anterior == ESTADO_CON_DUDAS and quedan == 0:
-            decidido = origen.get("estado_mesa") if isinstance(origen.get("estado_mesa"), dict) else {}
-            estado_nuevo = decidido.get("estado", ESTADO_SIN_PROCESAR)
-            if decidido:
-                origen["estado"] = ORIGEN_MESA
-            cambios_visita["estado"] = estado_nuevo
-            cambios_visita["salida_json"] = _json(
-                {"stp": decidido["stp"]} if estado_nuevo == ESTADO_PROCESADA else {})
+        cambios_visita.update(
+            estado_tras_cerrar_bloqueantes(conn, visita_id, estado_anterior, origen))
+        estado_nuevo = cambios_visita.get("estado", estado_anterior)
         if origen != _dict_json(visita["origen_datos_json"]):
             cambios_visita["origen_datos_json"] = _json(origen)
         if cambios_visita:

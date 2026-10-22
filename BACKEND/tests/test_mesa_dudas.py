@@ -126,7 +126,7 @@ def test_clase_invalida_422(con_sync):
     with _bd() as conn:
         duda = _duda(conn, CARPETA_FONDO, "clase")
         antes = _foto_bd(conn)
-    for malo in ("Parciales", "Final", ""):
+    for malo in ("Parciales", "Final", "Mixta", "mixta", ""):
         assert _patch(cliente, duda["id"], malo).status_code == 422
     with _bd() as conn:
         assert _foto_bd(conn) == antes
@@ -212,16 +212,23 @@ def test_hallazgo_se_marca_revisado_sin_aplicar_valor(con_sync):
     assert despues["estado"] == antes["estado"]
 
 
-def test_hallazgo_no_se_revisa_si_hay_bloqueante_abierta_del_mismo_campo(con_sync):
+def test_hallazgo_revisado_con_bloqueante_abierta_no_congela_el_campo(con_sync):
+    """T4b (a): ya no hace falta el 409; el sync solo cuenta bloqueantes resueltas."""
     cliente, _ = con_sync
     with _bd() as conn:
-        v = _visitas(conn)[CARPETA_8]
+        v = _visitas(conn)[CARPETA_FONDO]
         conn.execute("""INSERT INTO dudas_y_hallazgos (proyecto_id, visita_id, id_elemento, categoria,
                         campo_afectado, descripcion_pregunta, creado)
-                        VALUES ('terra-living', ?, '', 'DUDA_BLOQUEANTE', 'clase', 'SINTÉTICO', 'x')""",
+                        VALUES ('terra-living', ?, '', 'HALLAZGO_INTERNO', 'clase', 'SINTÉTICO', 'x')""",
                      (v["id"],))
-        h = _duda(conn, CARPETA_8, "clase", "HALLAZGO_INTERNO")
-    assert _patch(cliente, h["id"], "revisado").status_code == 409
+        h = _duda(conn, CARPETA_FONDO, "clase", "HALLAZGO_INTERNO")
+    assert _patch(cliente, h["id"], "revisado").status_code == 200
+    _sync(cliente)
+    with _bd() as conn:
+        v2 = _visitas(conn)[CARPETA_FONDO]
+        assert _duda(conn, CARPETA_FONDO, "clase")["resuelta"] == 0  # la bloqueante sigue abierta
+    assert "clase" in json.loads(v2["campos_pendientes_json"])
+    assert v2["clase"] == "pendiente de verificar" and v2["estado"] == "Con dudas"
 
 
 def test_duda_de_elemento_solo_guarda_la_respuesta(con_sync):
@@ -311,3 +318,57 @@ def test_error_a_mitad_revierte_todo(con_sync, monkeypatch):
             mesa_dudas.responder_duda(duda["id"], "05/03/2026")
     with _bd() as conn:
         assert _foto_bd(conn) == antes
+
+
+# ---------- T4b ----------
+
+def test_t4b_c_estado_diferido_se_aplica_al_cerrar_la_ultima_bloqueante(con_sync):
+    cliente, _ = con_sync
+    with _bd() as conn:
+        v = _visitas(conn)[CARPETA_18]
+        cur = conn.execute("""INSERT INTO dudas_y_hallazgos (proyecto_id, visita_id, id_elemento, categoria,
+                              campo_afectado, descripcion_pregunta, creado)
+                              VALUES ('terra-living', ?, 'C1', 'DUDA_BLOQUEANTE', 'ejes', 'SINTÉTICO', 'x')""",
+                           (v["id"],))
+        d_elemento = cur.lastrowid
+        d_estado = _duda(conn, CARPETA_18, "estado")
+    r = _patch(cliente, d_estado["id"], "corresponde")
+    assert r.status_code == 200 and r.json()["estado_visita"] == "Con dudas"  # queda otra abierta
+    with _bd() as conn:
+        v1 = _visitas(conn)[CARPETA_18]
+    assert v1["estado"] == "Con dudas" and json.loads(v1["salida_json"]) == {}
+    assert json.loads(v1["origen_datos_json"])["estado_mesa"]["estado"] == "Procesada"
+    r = _patch(cliente, d_elemento, "EJE A-1")  # SINTÉTICO: cierra la última
+    assert r.json()["estado_visita"] == "Procesada"
+    with _bd() as conn:
+        v2 = _visitas(conn)[CARPETA_18]
+    assert v2["estado"] == "Procesada"
+    assert [p.replace("\\", "/").rsplit("/", 1)[-1] for p in json.loads(v2["salida_json"])["stp"]] == [STP_18]
+    assert json.loads(v2["origen_datos_json"])["estado"] == "mesa_dudas"
+
+
+def test_t4b_d_corresponde_con_el_stp_borrado_422_sin_cambios(con_sync):
+    cliente, terra = con_sync
+    from sync.escaner_dropbox import SUBRUTA_INFORMES_PROCESADOS
+    (terra / SUBRUTA_INFORMES_PROCESADOS / STP_18).unlink()
+    with _bd() as conn:
+        duda = _duda(conn, CARPETA_18, "estado")
+        antes = _foto_bd(conn)
+    r = _patch(cliente, duda["id"], "corresponde")
+    assert r.status_code == 422 and STP_18 in r.json()["detail"]
+    with _bd() as conn:
+        assert _foto_bd(conn) == antes
+    # "no corresponde" no necesita el archivo
+    assert _patch(cliente, duda["id"], "no corresponde").status_code == 200
+
+
+def test_t4b_e_mixta_no_se_acepta_en_la_mesa(con_sync):
+    cliente, _ = con_sync
+    with _bd() as conn:
+        duda = _duda(conn, CARPETA_FONDO, "clase")
+        antes = _foto_bd(conn)
+    r = _patch(cliente, duda["id"], "Mixta")
+    assert r.status_code == 422 and "Mixta" not in r.json()["detail"].split(":")[-1]
+    with _bd() as conn:
+        assert _foto_bd(conn) == antes
+    assert _patch(cliente, duda["id"], "Parcial").status_code == 200

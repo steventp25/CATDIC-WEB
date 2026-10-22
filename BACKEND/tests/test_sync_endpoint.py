@@ -840,3 +840,106 @@ def test_fallo_revierte_el_proyecto(entorno, monkeypatch):
     with _bd() as conn:
         assert conn.execute("SELECT COUNT(*) FROM visitas").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM dudas_y_hallazgos").fetchone()[0] == 0
+
+
+# =====================================================================
+# Etapa 3 · T4b — hallazgos no congelan campos; el sync cierra la duda archivos_json
+# =====================================================================
+
+def test_t4b_a_hallazgo_revisado_no_congela_el_campo(entorno):
+    """#8 REAL: hallazgo de clase. Revisado, el sync sigue actualizando la clase desde Dropbox."""
+    cliente, _, _ = entorno
+    _sync(cliente)
+    nombre = "8 - COLUMNAS S-6 COMPLETIVO"
+    with _bd() as conn:
+        v = _visitas(conn)[nombre]
+        conn.execute("""UPDATE dudas_y_hallazgos SET resuelta = 1, respuesta_usuario = 'revisado'
+                        WHERE visita_id = ? AND categoria = 'HALLAZGO_INTERNO'
+                        AND campo_afectado = 'clase'""", (v["id"],))
+        conn.execute("UPDATE visitas SET clase = 'Parcial' WHERE id = ?", (v["id"],))  # SINTÉTICO: valor viejo
+        from sync.sincronizador import _campos_resueltos
+        assert "clase" not in _campos_resueltos(conn, v["id"])
+    _sync(cliente)
+    with _bd() as conn:
+        assert _visitas(conn)[nombre]["clase"] == "Completivo"  # manda la carpeta
+
+
+def test_t4b_a_bloqueante_resuelta_si_congela_el_campo(entorno):
+    cliente, _, _ = entorno
+    _sync(cliente)
+    nombre = "1. FONDO DE SEPTICO"
+    with _bd() as conn:
+        v = _visitas(conn)[nombre]
+        conn.execute("""UPDATE dudas_y_hallazgos SET resuelta = 1, respuesta_usuario = 'x'
+                        WHERE visita_id = ? AND campo_afectado = 'clase'""", (v["id"],))
+        from sync.sincronizador import _campos_resueltos
+        assert "clase" in _campos_resueltos(conn, v["id"])
+
+
+def _duda_archivos(conn, v):
+    return dict(conn.execute("""SELECT * FROM dudas_y_hallazgos WHERE visita_id = ?
+                                AND campo_afectado = 'archivos_json'""", (v["id"],)).fetchone())
+
+
+def _n_aud(conn, accion):
+    return conn.execute("SELECT COUNT(*) FROM auditoria WHERE accion = ?", (accion,)).fetchone()[0]
+
+
+def test_t4b_b_el_sync_cierra_la_duda_archivos_cuando_aparece_el_pdf(entorno):
+    cliente, terra, _ = entorno
+    _sync(cliente)
+    carpeta = "19. VERTICALES S-3 COMPLETIVO 09-10-2026"  # REAL: carpeta sin PDF
+    with _bd() as conn:
+        v = _visitas(conn)[carpeta]
+        assert v["estado"] == "Con dudas" and _duda_archivos(conn, v)["resuelta"] == 0
+    (terra / SUBRUTA_VISITAS / carpeta / "VERTICALES S-3 COMPLETIVO.pdf").write_bytes(CONTENIDO_FALSO)  # SINTÉTICO
+    _sync(cliente)
+    with _bd() as conn:
+        v = _visitas(conn)[carpeta]
+        d = _duda_archivos(conn, v)
+        assert d["resuelta"] == 1 and d["respuesta_usuario"] == "resuelta por sincronización"
+        assert d["resuelto_en"]
+        fila = conn.execute("SELECT * FROM auditoria WHERE accion = 'CERRAR_DUDA_ARCHIVOS'").fetchone()
+        detalle = json.loads(fila["detalle_json"])
+        assert fila["entidad_id"] == str(d["id"])
+        assert detalle["estado_anterior"] == "Con dudas" and detalle["estado_nuevo"] == "Sin procesar"
+    assert v["estado"] == "Sin procesar" and json.loads(v["salida_json"]) == {}  # nunca Procesada solo
+    # Segundo sync: nada cambia ni se vuelve a auditar
+    _sync(cliente)
+    with _bd() as conn:
+        assert _n_aud(conn, "CERRAR_DUDA_ARCHIVOS") == 1
+        assert _visitas(conn)[carpeta]["estado"] == "Sin procesar"
+
+
+def test_t4b_b_si_queda_otra_bloqueante_la_visita_sigue_con_dudas(entorno):
+    cliente, terra, _ = entorno
+    _sync(cliente)
+    carpeta = "19. VERTICALES S-3 COMPLETIVO 09-10-2026"
+    with _bd() as conn:
+        v = _visitas(conn)[carpeta]
+        conn.execute("""INSERT INTO dudas_y_hallazgos (proyecto_id, visita_id, id_elemento, categoria,
+                        campo_afectado, descripcion_pregunta, creado)
+                        VALUES ('terra-living', ?, 'C1', 'DUDA_BLOQUEANTE', 'ejes', 'SINTÉTICO', 'x')""",
+                     (v["id"],))
+    (terra / SUBRUTA_VISITAS / carpeta / "VERTICALES S-3 COMPLETIVO.pdf").write_bytes(CONTENIDO_FALSO)  # SINTÉTICO
+    _sync(cliente)
+    with _bd() as conn:
+        assert _duda_archivos(conn, _visitas(conn)[carpeta])["resuelta"] == 1
+        assert _visitas(conn)[carpeta]["estado"] == "Con dudas"
+
+
+def test_t4b_b_si_el_pdf_vuelve_a_faltar_se_reabre_la_duda(entorno):
+    cliente, terra, _ = entorno
+    _sync(cliente)
+    carpeta = "19. VERTICALES S-3 COMPLETIVO 09-10-2026"
+    pdf = terra / SUBRUTA_VISITAS / carpeta / "VERTICALES S-3 COMPLETIVO.pdf"
+    pdf.write_bytes(CONTENIDO_FALSO)  # SINTÉTICO
+    _sync(cliente)
+    pdf.unlink()
+    _sync(cliente)
+    with _bd() as conn:
+        v = _visitas(conn)[carpeta]
+        d = _duda_archivos(conn, v)
+        assert d["resuelta"] == 0 and d["respuesta_usuario"] == ""
+        assert _n_aud(conn, "REABRIR_DUDA_ARCHIVOS") == 1
+    assert v["estado"] == "Con dudas"
