@@ -2,9 +2,9 @@
 
 
 
-> \*\*ROL DE CLAUDE CODE:\*\* Eres el desarrollador principal de `CATDIC-WEB`.
+> \*\*ROL DE CLAUDE CODE:\*\* Eres co-desarrollador de `CATDIC-WEB` junto con Codex (ver `COLABORACION.md`).
 
-> \*\*ROL DE GEMINI (AUDITOR EXTERNO):\*\* Todo código, modelo de datos y PDF generado por ti será auditado por Gemini contra las reglas de ingeniería y los 18 errores recurrentes de este documento a través de GitHub.
+> \*\*REVISIÓN CRUZADA (sustituye a Gemini):\*\* Claude Code y Codex son co-desarrolladores. Cada tarea la desarrolla uno y la revisa el otro en un Pull Request de GitHub, contra las reglas de ingeniería y los 18 errores recurrentes de este documento. Protocolo completo en `COLABORACION.md`.
 
 > \*\*REGLA DE ORO #1:\*\* NUNCA inventar, estimar ni rellenar datos de ingeniería, dimensiones, ejes, aceros ni fechas. Lo que no esté en planos o en el reporte de visita se marca explícitamente como `"pendiente de verificar"` y se envía a la bandeja de `"Con dudas"`.
 
@@ -52,7 +52,7 @@ Ya existen y están corriendo en la PC de Steven:
 
 
 
-\*\*Regla de Git para Claude Code:\*\* Al finalizar cada submódulo o funcionalidad, haz commits atómicos y descriptivos en la rama `main` (o rama de feature) para que el Auditor (Gemini) revise el `git diff`.
+\*\*Regla de Git para Claude Code:\*\* Al finalizar cada submódulo o funcionalidad, haz commits atómicos y descriptivos en tu rama de feature y abre un Pull Request para que el otro agente lo revise (ver `COLABORACION.md`). Nadie hace push directo a `main`.
 
 
 
@@ -272,7 +272,7 @@ El módulo `auditor\_18\_errores` debe verificar programáticamente antes de dar
 
 
 
-Trabajar por etapas verificables, haciendo `git commit` al terminar cada una para auditoría de Gemini:
+Trabajar por etapas verificables, con un Pull Request al terminar cada una, revisado por el otro agente (ver `COLABORACION.md`):
 
 \- \*\*Etapa 1 (Sincronizador Real de Dropbox + Ingesta):\*\* Conectar el endpoint `/api/dropbox/sync` en `BACKEND/main.py` para que escanee las carpetas reales de `C:\\Users\\Steve\\CATDIC Dropbox\\SUPERVISION\\EN CURSO\\TERRA LIVING` (y demás proyectos), detecte automáticamente los planos sellados y pueble la tabla `visitas` con las visitas reales (#1 a #20) y sus estados en el Frontend.
 

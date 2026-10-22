@@ -1,6 +1,6 @@
 # PLANES — Flujo de trabajo por roles
 
-Esta carpeta guarda los planes y evaluaciones de cada etapa. Es el registro que comparten el planificador, los ejecutores, el evaluador interno y Gemini.
+Esta carpeta guarda los planes y evaluaciones de cada etapa. Es el registro que comparten el planificador, los ejecutores, el evaluador interno y la revisión cruzada entre Claude Code y Codex (ver `../COLABORACION.md`).
 
 ## Ciclo por etapa
 
@@ -11,7 +11,7 @@ Esta carpeta guarda los planes y evaluaciones de cada etapa. Es el registro que 
 | 3 | `/ejecutar <N>` | Ejecutores (`ejecutor-backend`, `ejecutor-generadores`, `ejecutor-frontend`) | Código hecho, sin commit |
 | 4 | `/evaluar <N>` | Evaluador interno (solo lectura) | `PLANES/etapa-N-evaluacion.md` con APROBADO / BLOQUEADO |
 | 5 | Si APROBADO: commit + push (con confirmación de Steven) | — | Commit en GitHub |
-| 6 | Steven pasa el enlace del commit a Gemini | Auditor externo | Visto bueno para la siguiente etapa |
+| 6 | Se abre un Pull Request y el otro agente (Codex o Claude Code) lo revisa | Revisión cruzada | Steven fusiona y da el visto bueno para la siguiente etapa |
 
 Si el evaluador BLOQUEA, se corrige con `/ejecutar <N> T#` y se vuelve a `/evaluar <N>`.
 

@@ -1,5 +1,5 @@
 ---
-description: Rol EVALUADOR. Audita el trabajo de una etapa con el subagente evaluador y, si aprueba, prepara el commit para Gemini.
+description: Rol EVALUADOR. Audita el trabajo de una etapa con el subagente evaluador y, si aprueba, prepara el commit y el Pull Request para la revisión cruzada.
 argument-hint: <etapa> [T# opcional]
 ---
 
@@ -29,5 +29,5 @@ Evalúa el trabajo de la etapa: $ARGUMENTS
   ```
 - Verifica antes de cada `git add` que no entran `catdic_local.db`, PDFs, fotos ni `.env`.
 - **Pide confirmación a Steven antes de hacer el commit**, y otra vez antes del `git push`.
-- Después del push, dale a Steven el enlace del commit para pasárselo a Gemini.
+- Después del push, dale a Steven el enlace del Pull Request para la revisión cruzada (ver `COLABORACION.md`).
 - Marca las tareas en el plan como `- Estado: APROBADA · commit <hash corto>`.
