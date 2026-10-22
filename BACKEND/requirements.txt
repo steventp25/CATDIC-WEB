@@ -1,0 +1,14 @@
+# Dependencias de ejecución de CATDIC-WEB. Intérprete del proyecto: Python 3.14.
+# Uso: py -3.14 -m pip install -r requirements.txt
+# Después de instalar playwright: py -3.14 -m playwright install chromium
+# Una vez instaladas, la fábrica de documentos funciona 100% offline (CLAUDE.md §1.5).
+
+# Servidor
+fastapi==0.156.8
+uvicorn==0.54.0
+
+# Fábrica de documentos (Etapa 3)
+PyMuPDF==2.0        # import pymupdf (el alias "fitz" está obsoleto)
+Pillow==13.0.0
+playwright==1.64.0  # HTML -> PDF con Chromium
+pypdf==6.21.2
