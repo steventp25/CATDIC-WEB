@@ -60,6 +60,15 @@ def guardar_pdf(nombre_base: str, contenido: bytes, carpeta: Optional[Union[str,
     usuario = usuario or getpass.getuser()
     destino = resolver_carpeta_salida(carpeta)
     ruta = obtener_ruta_salida_sin_sobrescribir(destino, nombre_base)
+    entidad = entidad_id or ruta.name
+    if len(contenido) >= PESO_MAXIMO_PDF_BYTES:  # antes de escribir: no se crea un archivo para borrarlo
+        error = (f"Error #15: el PDF pesa {len(contenido) / 1_000_000:.1f} MB; debe pesar < 30 MB. "
+                 "No se escribió.")
+        registrar_auditoria(MODULO_AUDITORIA, ACCION_RECHAZAR, entidad,
+                            {"ruta": str(ruta), "bytes": len(contenido), "formato": formato,
+                             "limite_bytes": PESO_MAXIMO_PDF_BYTES, "errores": [error]}, usuario)
+        raise SalidaInvalida(error)
+    # La ruta sale de obtener_ruta_salida_sin_sobrescribir, así que aún no existe: se registra para el auditor
     existia_antes = ruta.exists()
     destino.mkdir(parents=True, exist_ok=True)
     with open(ruta, "xb") as f:  # "x": falla si el archivo apareció entre tanto; nunca sobrescribe
@@ -67,8 +76,7 @@ def guardar_pdf(nombre_base: str, contenido: bytes, carpeta: Optional[Union[str,
 
     errores: List[str] = auditar_archivo_pdf_generado(ruta, existia_antes)
     detalle = {"ruta": str(ruta), "bytes": len(contenido), "formato": formato,
-               "limite_bytes": PESO_MAXIMO_PDF_BYTES, "existia_antes": existia_antes}
-    entidad = entidad_id or ruta.name
+               "limite_bytes": PESO_MAXIMO_PDF_BYTES, "version_nueva": ruta.name != nombre_base}
     if errores:
         ruta.unlink()  # es el archivo que acabamos de crear con "x"
         registrar_auditoria(MODULO_AUDITORIA, ACCION_RECHAZAR, entidad, {**detalle, "errores": errores}, usuario)

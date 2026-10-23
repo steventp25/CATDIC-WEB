@@ -182,7 +182,7 @@ def test_recuadro_no_se_deduce_coordenadas_invalidas(tmp_path):
 def test_detalle_recorta_de_forma_nitida_del_plano(tmp_path):
     (tmp_path / "planos").mkdir()
     pdf = _plano_pdf(tmp_path / "planos" / "plano.pdf")
-    img = detalle.recortar_detalle(pdf, 0, (0, 0, 100, 100), carpeta_planos=tmp_path / "planos")
+    img = detalle.recortar_detalle(pdf, 0, (0, 0, 100, 100), tmp_path / "planos")
     assert img.size == (round(100 * 300 / 72), round(100 * 300 / 72))
     assert img.getpixel((60, 60)) == (255, 0, 0)  # el cuadrado rojo sintético, sin suavizado
 
@@ -191,7 +191,7 @@ def test_detalle_rechaza_foto_de_campo_error_2(tmp_path):
     foto = tmp_path / "foto.jpg"
     Image.new("RGB", (800, 600), (90, 90, 90)).save(foto)
     with pytest.raises(ValueError, match="Error #2"):
-        detalle.recortar_detalle(foto, 0, (0, 0, 100, 100))
+        detalle.recortar_detalle(foto, 0, (0, 0, 100, 100), tmp_path)
 
 
 def test_detalle_rechaza_pdf_fuera_de_la_carpeta_de_planos_y_regiones_malas(tmp_path):
@@ -199,11 +199,42 @@ def test_detalle_rechaza_pdf_fuera_de_la_carpeta_de_planos_y_regiones_malas(tmp_
     (tmp_path / "otras").mkdir()
     afuera = _plano_pdf(tmp_path / "otras" / "visita.pdf")
     with pytest.raises(ValueError, match="Error #2"):
-        detalle.recortar_detalle(afuera, 0, (0, 0, 100, 100), carpeta_planos=tmp_path / "planos")
+        detalle.recortar_detalle(afuera, 0, (0, 0, 100, 100), tmp_path / "planos")
     with pytest.raises(ValueError, match="pendiente de verificar"):
-        detalle.recortar_detalle(afuera, 0, (0, 0, 9999, 100))
+        detalle.recortar_detalle(afuera, 0, (0, 0, 9999, 100), tmp_path / "otras")
     with pytest.raises(ValueError, match="ilegible"):
-        detalle.recortar_detalle(afuera, 0, (0, 0, 10, 10))
+        detalle.recortar_detalle(afuera, 0, (0, 0, 10, 10), tmp_path / "otras")
+
+
+def _pdf_de_visita(ruta):
+    """PDF SINTÉTICO que imita uno de visita: una foto por página con 'Creado el:' debajo."""
+    foto = io.BytesIO()
+    Image.new("RGB", (768, 1024), (120, 110, 100)).save(foto, format="JPEG")
+    doc = pymupdf.open()
+    for i in range(3):
+        hoja = doc.new_page(width=612, height=792)
+        hoja.insert_image(pymupdf.Rect(56, 99, 465, 644), stream=foto.getvalue())
+        hoja.insert_text((56, 660), f"Pared {i}", fontsize=12)
+        hoja.insert_text((56, 680), "Creado el: 28/09/2026 11:03", fontsize=10)
+    doc.save(str(ruta))
+    doc.close()
+    return ruta
+
+
+def test_detalle_rechaza_un_pdf_de_visita_fuera_de_la_carpeta_de_planos_error_2(tmp_path):
+    (tmp_path / "planos").mkdir()
+    (tmp_path / "visita").mkdir()
+    visita = _pdf_de_visita(tmp_path / "visita" / "Verticales.pdf")
+    with pytest.raises(ValueError, match="Error #2"):
+        detalle.recortar_detalle(visita, 0, (0, 0, 300, 300), tmp_path / "planos")
+
+
+def test_detalle_exige_la_carpeta_de_planos(tmp_path):
+    pdf = _plano_pdf(tmp_path / "plano.pdf")
+    with pytest.raises(TypeError):
+        detalle.recortar_detalle(pdf, 0, (0, 0, 100, 100))  # sin carpeta_planos no se puede llamar
+    with pytest.raises(ValueError, match="pendiente de verificar"):
+        detalle.recortar_detalle(pdf, 0, (0, 0, 100, 100), "")
 
 
 # ---------- salida segura ----------
@@ -255,11 +286,11 @@ def test_rechaza_nombres_peligrosos(entorno, nombre):
         salida.guardar_pdf(nombre, b"%PDF-1.4 sintetico")
 
 
-def test_pdf_de_30_mb_o_mas_se_rechaza_y_se_retira(entorno):
+def test_pdf_de_30_mb_o_mas_se_rechaza_antes_de_escribir(entorno):
     grande = b"%PDF-1.4 " + b"0" * PESO_MAXIMO_PDF_BYTES  # SINTÉTICO: justo sobre el límite
     with pytest.raises(salida.SalidaInvalida, match="30 MB"):
         salida.guardar_pdf("Grande.pdf", grande, usuario="prueba")
-    assert not (entorno / "salida" / "Grande.pdf").exists()
+    assert not (entorno / "salida").exists()  # se rechazó ANTES de escribir: ni la carpeta se creó
     filas = _acciones_auditoria()
     assert [f["accion"] for f in filas] == ["RECHAZAR_PDF"]
     assert "Error #15" in json.loads(filas[0]["detalle_json"])["errores"][0]

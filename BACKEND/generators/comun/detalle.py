@@ -3,7 +3,7 @@
 # Siempre un recorte nítido del PLANO estructural; nunca una foto de campo (error #2).
 # La región llega como parámetro (en puntos del PDF); este módulo no la deduce.
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Tuple, Union
 
 import pymupdf
 from PIL import Image
@@ -16,22 +16,26 @@ Region = Tuple[float, float, float, float]  # x0, y0, x1, y1 en puntos del PDF (
 
 
 def recortar_detalle(ruta_plano: Union[str, Path], pagina: int, region_pt: Region,
-                     carpeta_planos: Optional[Path] = None, dpi: int = DPI_DETALLE) -> Image.Image:
+                     carpeta_planos: Union[str, Path], dpi: int = DPI_DETALLE) -> Image.Image:
     """
     Recorta una región de la hoja `pagina` (0-based) del plano.
+    `carpeta_planos` es OBLIGATORIA: un PDF de visita (fotos de campo) también es .pdf, así que la
+    única garantía de que es un plano es que esté en la carpeta de planos estructurales.
     Rechaza (ValueError) lo que no sea un plano: un archivo que no es PDF (una foto), un PDF fuera
-    de `carpeta_planos` (si se indica), una región fuera de la hoja o tan chica que sería ilegible.
+    de `carpeta_planos`, una región fuera de la hoja o tan chica que sería ilegible.
     """
     ruta = Path(ruta_plano)
     if ruta.suffix.lower() != ".pdf":
         raise ValueError(f"Error #2: DETALLE solo se recorta de un plano en PDF, no de '{ruta.name}' "
                          "(una foto de campo nunca va en DETALLE).")
-    if carpeta_planos is not None:
-        try:
-            ruta.resolve().relative_to(Path(carpeta_planos).resolve())
-        except ValueError:
-            raise ValueError(f"Error #2: '{ruta.name}' no está en la carpeta de planos; DETALLE solo "
-                             "sale de los planos estructurales.") from None
+    if not carpeta_planos or not str(carpeta_planos).strip():
+        raise ValueError(f"{PENDIENTE}: falta la carpeta de planos; sin ella no se puede garantizar "
+                         "que el origen sea un plano (error #2).")
+    try:
+        ruta.resolve().relative_to(Path(carpeta_planos).resolve())
+    except ValueError:
+        raise ValueError(f"Error #2: '{ruta.name}' no está en la carpeta de planos; DETALLE solo "
+                         "sale de los planos estructurales.") from None
     x0, y0, x1, y1 = region_pt
     with pymupdf.open(str(ruta)) as doc:
         if not 0 <= pagina < doc.page_count:
