@@ -163,8 +163,9 @@ def test_carga_agrupa_guarda_literal_y_crea_una_duda_por_grupo(entorno):
     dudas = _dudas()
     assert len(dudas) == 3  # UNA por grupo, no una por campo
     assert {d["categoria"] for d in dudas} == {"DUDA_BLOQUEANTE"} and {d["visita_id"] for d in dudas} == {VISITA_ID}
-    assert "'Mh1 pantalla eje 3'" in dudas[1]["descripcion_pregunta"] and "páginas 4 a 5" in dudas[1]["descripcion_pregunta"]
+    assert "'Mh1 pantalla eje 3'" in dudas[1]["descripcion_pregunta"] and "Fotos de las páginas 4 a 5" in dudas[1]["descripcion_pregunta"]
     assert "abre un elemento nuevo" in dudas[1]["descripcion_pregunta"]
+    assert dudas[2]["descripcion_pregunta"].startswith("Fotos de las páginas 6 a 7")
     assert r["grupos"] == 3 and r["paginas"] == 7
 
 
@@ -177,6 +178,12 @@ def test_primeras_fotos_sin_etiqueta_forman_un_grupo_pendiente_con_duda(entorno)
     assert len(json.loads(filas[0]["fotos_json"])) == 2
     d = _dudas()[0]
     assert "no tienen etiqueta" in d["descripcion_pregunta"] and d["id_elemento"] == "(sin etiqueta)"
+
+
+def test_grupo_de_una_sola_foto_usa_singular(entorno):
+    pdf = _pdf_visita(entorno / "v.pdf", [{"etiqueta": "L1"}, {"etiqueta": "L2"}])
+    lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)
+    assert _dudas()[0]["descripcion_pregunta"].startswith("Foto de la página 1 con la etiqueta literal 'L1'")
 
 
 def test_a1_llena_ejes_y_queda_con_duda_por_el_id(entorno):

@@ -213,12 +213,13 @@ def armar_grupos(paginas: List[Dict], nombre_carpeta: str) -> List[Dict]:
 
 def _texto_duda(grupo: Dict) -> str:
     primera, ultima = grupo["fotos"][0]["pagina"], grupo["fotos"][-1]["pagina"]
-    paginas = f"página {primera}" if primera == ultima else f"páginas {primera} a {ultima}"
+    una = primera == ultima
+    paginas = f"página {primera}" if una else f"páginas {primera} a {ultima}"
     if not grupo["etiqueta_original"]:
         return (f"Las primeras fotos de la visita ({paginas}) no tienen etiqueta: ¿a qué elemento "
                 "pertenecen? No se asignan por adivinanza.")
-    return (f"Fotos de las {paginas} con la etiqueta literal '{grupo['etiqueta_original']}': ¿abre un "
-            "elemento nuevo (tipo, ID, ejes) o pertenece al anterior?")
+    return (f"{'Foto de la' if una else 'Fotos de las'} {paginas} con la etiqueta literal "
+            f"'{grupo['etiqueta_original']}': ¿abre un elemento nuevo (tipo, ID, ejes) o pertenece al anterior?")
 
 
 # ---------- Carga a la BD ----------
