@@ -236,8 +236,19 @@ def test_migracion_conserva_fila_hijos_y_crea_respaldo(bd_vieja):
         conn.close()
 
     respaldos = _respaldos(bd_vieja.parent, bd_vieja.stem)
-    # Una BD vieja pasa también por la migración de proyectos (T7a), que saca su propio respaldo
-    assert detalle["respaldo"] in respaldos
+    # Una BD vieja pasa por dos migraciones con respaldo: visitas y proyectos (T7a). Exactamente 2
+    # respaldos, y cada uno corresponde a una fila MIGRACION_* de auditoría (ninguno huérfano).
+    assert len(respaldos) == 2
+    conn = database.get_connection()
+    try:
+        filas = conn.execute(
+            "SELECT accion, detalle_json FROM auditoria WHERE accion LIKE 'MIGRACION_%'").fetchall()
+    finally:
+        conn.close()
+    por_accion = {f["accion"]: json.loads(f["detalle_json"])["respaldo"] for f in filas}
+    assert set(por_accion) == {"MIGRACION_VISITAS", "MIGRACION_PROYECTOS_CABECERA"}
+    assert sorted(por_accion.values()) == respaldos
+    assert por_accion["MIGRACION_VISITAS"] == detalle["respaldo"]
     # El respaldo conserva el esquema viejo y la fila
     copia = sqlite3.connect(bd_vieja.parent / detalle["respaldo"])
     try:
