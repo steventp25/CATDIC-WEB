@@ -170,8 +170,11 @@ def test_pdf_que_no_es_de_visita_se_rechaza(entorno):
     ("C1 A4", ("C1", "EJE A-4")),                              # NORMA: CLAUDE.md §3.2 ejemplo ID + eje
     ("Mh4", (PENDIENTE, PENDIENTE)),                           # REAL #17: no es un cruce de ejes
     ("Tramo D-B", (PENDIENTE, PENDIENTE)),                     # REAL #18: el eje del pórtico no se deduce
-    ("Mc eje A’ Tramo 3-4’", (PENDIENTE, PENDIENTE)),          # REAL #20: la prima ’ no se normaliza
-    ("A’1", (PENDIENTE, PENDIENTE)),
+    ("Mc eje A’ Tramo 3-4’", (PENDIENTE, PENDIENTE)),          # REAL #20: se normaliza la prima pero no es un cruce simple
+    ("A’1", (PENDIENTE, "EJE A'-1")),                          # prima ’ normalizada a ' recta
+    ("a'1", (PENDIENTE, "EJE A'-1")),
+    ("c1 a4", ("C1", "EJE A-4")),                              # mayúsculas normalizadas
+    ("mh4", (PENDIENTE, PENDIENTE)),                           # una sola letra de eje: Mh4 sigue pendiente
     ("Garantizar recubrimiento", (PENDIENTE, PENDIENTE)),
     ("", (PENDIENTE, PENDIENTE)),
 ])
@@ -181,9 +184,21 @@ def test_interpretar_etiqueta(etiqueta, esperado):
     assert r["tipo_elemento"] == PENDIENTE  # el tipo nunca se deduce
 
 
-def test_o2_el_id_se_guarda_tal_cual_sin_mayusculas():
-    r = lector_visita.interpretar_etiqueta("c1 A4")
-    assert (r["id_elemento"], r["ejes"]) == ("c1", "EJE A-4")
+def test_la_etiqueta_original_se_guarda_literal_aunque_se_normalice_para_interpretar(entorno):
+    pdf = _pdf_visita(entorno / "v.pdf", [{"etiqueta": "c1 a4"}, {"etiqueta": "Mh4"}])
+    lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)
+    filas = _filas()
+    assert [f["etiqueta_original"] for f in filas] == ["c1 a4", "Mh4"]  # literal, en minúsculas
+    assert (filas[0]["id_elemento"], filas[0]["ejes"]) == ("C1", "EJE A-4")
+    assert len(_dudas()) == 1 and "'Mh4'" in _dudas()[0]["descripcion_pregunta"]  # la duda cita el literal
+
+
+def test_armar_grupos_conserva_la_prima_tipografica_en_la_etiqueta():
+    pagina = {"pagina": 1, "etiqueta": "Mc eje A’ Tramo 3-4’", "nota": "", "hora": None, "foto_bbox": (0, 0, 1, 1)}
+    g = lector_visita.armar_grupos([pagina], CARPETA_17)[0]
+    assert g["etiqueta_original"] == "Mc eje A’ Tramo 3-4’"  # con U+2019, sin normalizar
+    assert (g["id_elemento"], g["ejes"]) == (PENDIENTE, PENDIENTE) and not g["reconocido"]
+    assert "'Mc eje A’ Tramo 3-4’'" in lector_visita._texto_duda(g)
 
 
 def test_nivel_solo_si_la_carpeta_trae_exactamente_uno():

@@ -186,11 +186,14 @@ def interpretar_etiqueta(etiqueta: str) -> Dict[str, str]:
     Solo lo que el texto da sin interpretar. Devuelve id_elemento, tipo_elemento y ejes.
     - 'A1' o '1A' (una sola letra, prima recta opcional) -> ejes 'EJE A-1' vía interpretar_eje_de_visita.
     - '<ID> <cruce>' con ID de la forma letras+número (C1, Z4, L9) -> id y ejes.
-    - Cualquier otra cosa (Mh4, Tramo D-B, Pórtico eje 3, L5...) queda pendiente. El tipo nunca se
-      deduce, y la prima ’ no se normaliza.
+    - Antes de interpretar se normaliza (decisión de Steven): prima ’ -> ' y mayúsculas (c1 a4 -> C1, EJE A-4).
+    - Cualquier otra cosa (Mh4, Tramo D-B, Pórtico eje 3, L5, Mc eje A’ Tramo 3-4’...) queda pendiente.
+      El tipo nunca se deduce.
     """
     resultado = {"id_elemento": PENDIENTE, "tipo_elemento": PENDIENTE, "ejes": PENDIENTE}
-    tokens = (etiqueta or "").split()
+    # Normalización aprobada por Steven (23/10/2026): prima ’ -> ' y mayúsculas, solo para interpretar.
+    # etiqueta_original se guarda siempre literal.
+    tokens = (etiqueta or "").replace("’", "'").upper().split()
 
     def _ejes(token: str) -> Optional[str]:
         if not _RE_EJE_UNA_LETRA.fullmatch(token):  # 'Mh4' tiene dos letras: no es un cruce de ejes
@@ -205,10 +208,10 @@ def interpretar_etiqueta(etiqueta: str) -> Dict[str, str]:
         ejes = _ejes(tokens[0])
         if ejes:
             resultado["ejes"] = ejes
-    elif len(tokens) == 2 and _RE_ID.fullmatch(tokens[0].upper()):
+    elif len(tokens) == 2 and _RE_ID.fullmatch(tokens[0]):
         ejes = _ejes(tokens[1])
         if ejes:
-            resultado.update(id_elemento=tokens[0], ejes=ejes)  # tal cual: normalizar lo decide Steven
+            resultado.update(id_elemento=tokens[0], ejes=ejes)
     return resultado
 
 
