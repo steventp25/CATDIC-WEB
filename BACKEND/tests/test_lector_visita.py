@@ -165,14 +165,20 @@ def test_pdf_que_no_es_de_visita_se_rechaza(entorno):
 # ---------- Interpretación sin adivinar ----------
 
 @pytest.mark.parametrize("etiqueta,esperado", [
-    ("A1", ("pendiente de verificar", "EJE A-1")),            # cruce: el orden letra/número se acepta
-    ("1A", ("pendiente de verificar", "EJE A-1")),
+    ("A1", (PENDIENTE, PENDIENTE)),                            # un solo token: pendiente (decisión de Steven)
+    ("1A", (PENDIENTE, PENDIENTE)),
+    ("1a", (PENDIENTE, PENDIENTE)),
+    ("L5", (PENDIENTE, PENDIENTE)),                            # REAL #20: L5 es la losa 5, no un eje
+    ("C1", (PENDIENTE, PENDIENTE)),                            # una columna, no un eje
+    ("Z4", (PENDIENTE, PENDIENTE)),
+    ("c1 1a", ("C1", "EJE A-1")),                              # ID + cruce en orden número/letra
     ("C1 A4", ("C1", "EJE A-4")),                              # NORMA: CLAUDE.md §3.2 ejemplo ID + eje
     ("Mh4", (PENDIENTE, PENDIENTE)),                           # REAL #17: no es un cruce de ejes
     ("Tramo D-B", (PENDIENTE, PENDIENTE)),                     # REAL #18: el eje del pórtico no se deduce
     ("Mc eje A’ Tramo 3-4’", (PENDIENTE, PENDIENTE)),          # REAL #20: se normaliza la prima pero no es un cruce simple
-    ("A’1", (PENDIENTE, "EJE A'-1")),                          # prima ’ normalizada a ' recta
-    ("a'1", (PENDIENTE, "EJE A'-1")),
+    ("A’1", (PENDIENTE, PENDIENTE)),                           # un solo token: pendiente aunque se normalice la prima
+    ("a'1", (PENDIENTE, PENDIENTE)),
+    ("C1 A’4", ("C1", "EJE A'-4")),                            # ID + cruce con prima ’ normalizada
     ("c1 a4", ("C1", "EJE A-4")),                              # mayúsculas normalizadas
     ("mh4", (PENDIENTE, PENDIENTE)),                           # una sola letra de eje: Mh4 sigue pendiente
     ("Garantizar recubrimiento", (PENDIENTE, PENDIENTE)),
@@ -246,12 +252,14 @@ def test_grupo_de_una_sola_foto_usa_singular(entorno):
     assert _dudas()[0]["descripcion_pregunta"].startswith("Foto de la página 1 con la etiqueta literal 'L1'")
 
 
-def test_a1_llena_ejes_y_queda_con_duda_por_el_id(entorno):
-    pdf = _pdf_visita(entorno / "v.pdf", [{"etiqueta": "A1"}])
+@pytest.mark.parametrize("etiqueta", ["A1", "1A", "L5", "C1", "A'1"])
+def test_etiqueta_de_un_solo_token_deja_ejes_e_id_pendientes_con_una_duda(entorno, etiqueta):
+    pdf = _pdf_visita(entorno / "v.pdf", [{"etiqueta": etiqueta}])
     lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)
     f = _filas()[0]
-    assert f["ejes"] == "EJE A-1" and f["id_elemento"] == PENDIENTE
-    assert len(_dudas()) == 1  # el ID sigue sin saberse
+    assert f["etiqueta_original"] == etiqueta
+    assert (f["id_elemento"], f["ejes"]) == (PENDIENTE, PENDIENTE)
+    assert len(_dudas()) == 1  # la duda del grupo hace la pregunta
 
 
 def test_c1_a4_queda_reconocido_sin_duda(entorno):

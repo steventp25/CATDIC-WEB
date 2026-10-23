@@ -184,8 +184,10 @@ def nivel_de_carpeta(nombre_carpeta: str) -> str:
 def interpretar_etiqueta(etiqueta: str) -> Dict[str, str]:
     """
     Solo lo que el texto da sin interpretar. Devuelve id_elemento, tipo_elemento y ejes.
-    - 'A1' o '1A' (una sola letra, prima recta opcional) -> ejes 'EJE A-1' vía interpretar_eje_de_visita.
-    - '<ID> <cruce>' con ID de la forma letras+número (C1, Z4, L9) -> id y ejes.
+    - Solo el patrón '<ID> <cruce>' (ID letras+número, cruce de UNA letra y un número en cualquier
+      orden) da id y ejes: 'C1 A4' -> C1 + 'EJE A-4' vía interpretar_eje_de_visita.
+    - Una etiqueta de UN solo token (A1, 1A, L5, C1, A’1...) queda pendiente (decisión de Steven):
+      'L5' es la losa 5 y 'C1' una columna, no ejes; 'A1' tampoco se asume como cruce sin su ID.
     - Antes de interpretar se normaliza (decisión de Steven): prima ’ -> ' y mayúsculas (c1 a4 -> C1, EJE A-4).
     - Cualquier otra cosa (Mh4, Tramo D-B, Pórtico eje 3, L5, Mc eje A’ Tramo 3-4’...) queda pendiente.
       El tipo nunca se deduce.
@@ -204,11 +206,7 @@ def interpretar_etiqueta(etiqueta: str) -> Dict[str, str]:
         valor = formatear_campo_ejes("cruce_puntual", eje_letra_1=cruce[0], eje_num_1=cruce[1])
         return None if valor == PENDIENTE else valor
 
-    if len(tokens) == 1:
-        ejes = _ejes(tokens[0])
-        if ejes:
-            resultado["ejes"] = ejes
-    elif len(tokens) == 2 and _RE_ID.fullmatch(tokens[0]):
+    if len(tokens) == 2 and _RE_ID.fullmatch(tokens[0]):
         ejes = _ejes(tokens[1])
         if ejes:
             resultado.update(id_elemento=tokens[0], ejes=ejes)
