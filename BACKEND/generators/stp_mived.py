@@ -9,6 +9,7 @@
 import base64
 import html
 import io
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -63,13 +64,17 @@ ROTULOS = {
             ("o", "o. Solape zona Central y Long:"), ("p", "p. Cuantia ()"), ("q", "p. % Acero solap.")],
 }
 # Filas que el plano (Capa 1) debe traer; el resto puede quedar vacío si el plano no lo indica.
-# f/g de losa y muro (recubrimientos) salen de la tabla de §4.5, no de la ficha.
+# "Calzos coloc." (e) es una comprobación de obra: no se exige en PLANOS. Los recubrimientos f/g de losa y
+# muro, en la columna PLANOS, salen de la tabla de §4.5 (pendiente de que Steven lo confirme).
 OBLIGATORIAS = {
     "viga": set("bcdefghij"),
-    "losa": set("abehin"),
-    "muro": set("abehijk"),
+    "losa": set("abhin"),
+    "muro": set("abhijk"),
     "col": set("bcdefghijkmn"),
 }
+# Filas que, además de las obligatorias del plano, deben venir de la visita (columna OBRA): si faltan, la celda
+# queda vacía y se crea una duda que no bloquea. Los recubrimientos de OBRA salen de la ficha, nunca de §4.5.
+OBRA_EXTRA = {"losa": set("efg"), "muro": set("efg")}
 # Filas dimensionales (se comparan plano vs. acero medido con evaluar_medida_acero_obra, §4.5)
 DIMENSIONALES = {"viga": "cd", "col": "cd", "losa": "b", "muro": "b"}
 CON_CUANTIA = {"viga", "col"}
@@ -88,7 +93,7 @@ def _tipo_de_fila(tipo_elemento: str) -> Optional[str]:
         return "col"
     if t.startswith("LOSA"):
         return "losa"
-    if t.startswith("MURO") and "CONTENCION" not in t:
+    if t.startswith("MURO"):  # incluye MURO DE CONTENCION (recubrimiento 0.075 de §4.5)
         return "muro"
     return None
 
@@ -177,7 +182,19 @@ def _filas_de_ficha(ficha: Dict, tipo_txt: str, kind: str, tolerancia) -> Tuple[
         plano[letra] = "" if _vacio(plano_in.get(letra)) else str(plano_in[letra])
         obra[letra] = "" if _vacio(obra_in.get(letra)) else str(obra_in[letra])
     if kind in ("losa", "muro"):
-        plano["f"] = plano["g"] = obra["f"] = obra["g"] = rec
+        plano["f"] = plano["g"] = rec  # PLANOS: §4.5; OBRA (f, g) sale de la visita, no de la tabla
+
+    # Columnas: "k. Total barras" debe coincidir con la suma de las barras de la ficha
+    if kind == "col":
+        try:
+            total_barras = sum(int(n) for n, _ in ficha.get("barras") or [])
+            if int(str(plano_in.get("k")).strip()) != total_barras:
+                duda("plano.k", f"'Total barras' ({plano_in.get('k')}) no coincide con la suma de las barras "
+                                f"({total_barras}) de {id_el}: {PENDIENTE}.")
+                return None, dudas, {}
+        except (ValueError, TypeError):
+            duda("plano.k", f"'Total barras' o las barras de {id_el} no son numéricas: {PENDIENTE}.")
+            return None, dudas, {}
 
     # Filas dimensionales: plano = valor del plano; OBRA = evaluar_medida_acero_obra (§4.5)
     for letra, m in medidas.items():
@@ -189,6 +206,12 @@ def _filas_de_ficha(ficha: Dict, tipo_txt: str, kind: str, tolerancia) -> Tuple[
             duda(f"medidas.{letra}", f"No se pudo evaluar la medida '{letra}' de {tipo_txt}: {exc}")
             return None, dudas, {}
         plano[letra] = _fmt_m(m["valor_plano_m"])
+        if m.get("medida_acero_campo_m") is None:
+            # Sin medida de campo nadie midió nada: OBRA queda VACÍA (no se copia el valor del plano)
+            obra[letra] = ""
+            duda(f"medidas.{letra}", f"La fila '{letra}' de {id_el} no tiene medida de campo sobre el acero: la "
+                                     f"celda de OBRA queda vacía ({PENDIENTE}).", bloquea=False)
+            continue
         obra[letra] = _fmt_m(ev["valor_columna_obra_m"])
         medidas_aud.append({"dimension": letra, "valor_plano_m": m["valor_plano_m"],
                             "medida_acero_campo_m": m.get("medida_acero_campo_m"),
@@ -219,15 +242,15 @@ def _filas_de_ficha(ficha: Dict, tipo_txt: str, kind: str, tolerancia) -> Tuple[
             obra["p"] = ""
         plano["q"] = "" if _vacio(plano_in.get("q")) else str(plano_in["q"])
         obra["q"] = "" if _vacio(obra_in.get("q")) else str(obra_in["q"])
-    if kind == "viga":  # error #9: ESTRIBOS al final; se resume con los valores propios de la ficha
+    if kind == "viga":
+        # Error #9 (ESTRIBOS al final): esta línea solo existe para el auditor y se arma con las filas f, g y h,
+        # que ya son obligatorias en PLANOS; por eso nunca se inventa un valor. No se imprime en las hojas.
         aud["observaciones_texto"] = (f"ESTRIBOS {plano['h']} {plano['f']} NODOS / {plano['g']} CENTRO")
 
-    # OBRA vacío en filas obligatorias que no salen del cálculo: queda vacío y se crea una duda (no bloquea)
-    for letra in sorted(OBLIGATORIAS[kind]):
-        if kind in ("losa", "muro") and letra in ("f", "g"):
-            continue
+    # OBRA vacío en filas que debe traer la visita: queda vacío y se crea una duda (no bloquea)
+    for letra in sorted(OBLIGATORIAS[kind] | OBRA_EXTRA.get(kind, set())):
         if letra in DIMENSIONALES[kind] and letra in medidas:
-            continue
+            continue  # ya tiene su propia duda (medidas.<letra>) si falta la medida
         if not obra.get(letra):
             duda(f"obra.{letra}", f"La fila '{letra}' de OBRA de {id_el} no tiene dato de la visita: queda vacía "
                                   f"({PENDIENTE}).", bloquea=False)
@@ -313,11 +336,16 @@ def _inspeccion(proy, visita, texto_obs) -> str:
             '<p style="font-weight:bold;font-size:8pt;margin-top:12px">NOMBRE Y FIRMAS DE LOS INSPECTORES:</p></div>')
 
 
-def _texto_observaciones(visita: Dict, discrepancias: List[str]) -> str:
-    """La conformidad solo va si no hay discrepancias abiertas (sin texto fijo de otro proyecto)."""
+def _texto_observaciones(visita: Dict, discrepancias: List[str], pendientes: int = 0) -> str:
+    """
+    La conformidad solo va si no hay discrepancias abiertas NI datos de OBRA pendientes (celdas vacías por
+    falta de medida o de dato de la visita, o elementos excluidos). Sin texto fijo de otro proyecto.
+    """
     base = f"SE VERIFICO EL ARMADO DE LOS ELEMENTOS {visita['elementos_txt']} - {visita['clase'].upper()}"
     if discrepancias:
         return base + ". DISCREPANCIAS ABIERTAS: " + " | ".join(discrepancias)
+    if pendientes:
+        return base + f". DATOS DE OBRA PENDIENTES DE VERIFICAR: {pendientes}."
     return base + ", ACORDE A PLANOS APROBADOS."
 
 
@@ -342,8 +370,10 @@ def renderizar_pdf(html_doc: str) -> bytes:
 
 def nombre_archivo(proyecto: Dict, visita: Dict) -> str:
     """§5.2: <Proyecto> - STP - <Elementos nivel> - DD-MM-AAAA.pdf"""
-    return (f"{proyecto['nombre']} - STP - {visita['elementos_txt'].title()} {visita['clase']} - "
-            f"{visita['fecha'].replace('/', '-')}.pdf")
+    elementos = re.sub(r'[<>:"/\\|?*]', " ", visita["elementos_txt"])  # solo se limpian los inválidos de Windows
+    elementos = " ".join(elementos.split())
+    nombre = re.sub(r'[<>:"/\\|?*]', " ", proyecto["nombre"])
+    return f"{' '.join(nombre.split())} - STP - {elementos} {visita['clase']} - {visita['fecha'].replace('/', '-')}.pdf"
 
 
 def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_salida=None,
@@ -353,7 +383,7 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
     Si hay cualquier error o duda bloqueante no se escribe ningún PDF. Las dudas no bloqueantes (p. ej. una
     fila de OBRA sin dato) se devuelven pero el PDF se genera con la celda vacía.
     """
-    resultado = {"ok": False, "ruta": None, "errores": [], "dudas": [], "discrepancias": []}
+    resultado = {"ok": False, "ruta": None, "errores": [], "dudas": [], "discrepancias": [], "excluidos": []}
     dudas = _errores_cabecera(proyecto, visita)
     if not fichas:
         dudas.append({"id_elemento": "", "campo_afectado": "fichas",
@@ -369,9 +399,13 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
                 continue
             kind = _tipo_de_fila(ficha["tipo_elemento"])
             if kind is None:
-                dudas.append({"id_elemento": id_el, "campo_afectado": "tipo_elemento",
+                # Este elemento se EXCLUYE (con una duda que no bloquea) y el resto del STP se genera
+                dudas.append({"id_elemento": id_el, "campo_afectado": "tipo_elemento", "bloquea": False,
+                              "excluido": True,
                               "descripcion_pregunta": f"El tipo '{ficha['tipo_elemento']}' no se genera en STP-MIVED "
-                                                      f"({TIPOS_NO_SOPORTADOS}): {PENDIENTE}."})
+                                                      f"({TIPOS_NO_SOPORTADOS}); el elemento queda fuera del "
+                                                      f"documento: {PENDIENTE}."})
+                resultado["excluidos"].append(id_el)
                 continue
             filas, d, aud = _filas_de_ficha(ficha, ficha["tipo_elemento"], kind, tolerancia)
             dudas.extend(d)
@@ -393,14 +427,19 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
     resultado["dudas"] = dudas
     if resultado["errores"] or any(d.get("bloquea", True) for d in dudas):
         return resultado
+    if not armadas:
+        resultado["errores"].append(f"Ningún elemento de la visita se puede generar en STP-MIVED ({PENDIENTE}).")
+        return resultado
+    pendientes = sum(1 for d in dudas if d.get("bloquea") is False)  # celdas de OBRA vacías o elementos excluidos
 
     # Imágenes (M1, M3, M4 de T6) y páginas
-    paginas, num = [_portada(proyecto, visita), _inspeccion(proyecto, visita, _texto_observaciones(visita, discrepancias))], 1
+    paginas, num = [_portada(proyecto, visita), _inspeccion(proyecto, visita, _texto_observaciones(visita, discrepancias, pendientes))], 1
     carpeta_planos = proyecto["carpeta_planos"]
     try:
         for ficha, kind, filas in armadas:
             prep = [m1_fotos.preparar_foto(p) for p in m1_fotos.seleccionar_para_stp(list(ficha["fotos"]))]
             loc = ficha["localizacion"]
+            _exigir_en_planos(loc["pdf"], carpeta_planos, "LOCALIZACION")
             loc_img = m3_localizacion.generar_localizacion(loc["pdf"], loc["pagina"], tuple(loc["caja"]), *CELDA_LOC_PX)
             det = ficha["detalle"]
             det_img = m4_detalle.recortar_detalle(det["pdf"], det["pagina"], tuple(det["region"]), carpeta_planos)
@@ -426,6 +465,14 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
         return resultado
     resultado.update(ok=True, ruta=guardado["ruta"], version_nueva=guardado["version_nueva"])
     return resultado
+
+
+def _exigir_en_planos(ruta, carpeta_planos, que: str):
+    """Errores #1/#2: LOCALIZACION, como DETALLE, solo sale de un plano que esté en la carpeta de planos."""
+    try:
+        Path(ruta).resolve().relative_to(Path(carpeta_planos).resolve())
+    except ValueError:
+        raise ValueError(f"{que} debe salir de un plano de la carpeta de planos, no de '{Path(ruta).name}'.") from None
 
 
 def _acotar(img: Image.Image, lado: int) -> Image.Image:

@@ -78,11 +78,40 @@ class Mundo:
     def ficha_losa(self, **cambios) -> dict:
         f = {"titulo": "LOSA NERVADA-LS1", "tipo_elemento": "LOSA ALIGERADA", "ejes": "—",
              "plano": {"a": "350", "e": "SI", "h": "MALLA SINT", "i": '2-Ø1/2"', "n": '2-Ø1/2"'},
-             "obra": {"a": "350", "e": "SI", "h": "MALLA SINT", "i": '2-Ø1/2"', "n": '2-Ø1/2"'},
+             "obra": {"a": "350", "e": "SI", "f": "0.025", "g": "0.025", "h": "MALLA SINT", "i": '2-Ø1/2"',
+                      "n": '2-Ø1/2"'},
              "medidas": {"b": {"valor_plano_m": 0.25, "medida_acero_campo_m": 0.20}},
              "fotos": self.fotos[:3],
              "localizacion": {"pdf": str(self.pdf_plano), "pagina": 0, "caja": (100, 100, 600, 500)},
              "detalle": {"pdf": str(self.pdf_plano), "pagina": 0, "region": (0, 0, 300, 200)}}
+        f.update(cambios)
+        return f
+
+    def _comunes(self):
+        return {"fotos": self.fotos[:2],
+                "localizacion": {"pdf": str(self.pdf_plano), "pagina": 0, "caja": (100, 100, 600, 500)},
+                "detalle": {"pdf": str(self.pdf_plano), "pagina": 0, "region": (0, 0, 300, 200)}}
+
+    def ficha_col(self, **cambios) -> dict:
+        f = {"titulo": "COLUMNA RECTANGULAR-CS1-EJE A-1", "tipo_elemento": "COLUMNA RECTANGULAR", "ejes": "EJE A-1",
+             "plano": {"b": "350", "e": "2.95", "f": 'Ø3/8"@0.10', "g": 'Ø3/8"@0.10', "h": 'Ø3/8"',
+                       "i": '4-Ø1"', "j": '4-Ø1"', "k": "8", "m": 'Ø1"', "n": 'Ø1"'},
+             "obra": {"b": "350", "e": "2.95", "f": 'Ø3/8"@0.10', "g": 'Ø3/8"@0.10', "h": 'Ø3/8"',
+                      "i": '4-Ø1"', "j": '4-Ø1"', "k": "8", "m": 'Ø1"', "n": 'Ø1"'},
+             "medidas": {"c": {"valor_plano_m": 0.60, "medida_acero_campo_m": 0.52},
+                         "d": {"valor_plano_m": 0.60, "medida_acero_campo_m": 0.52}},
+             "barras": [(8, '1"')]}
+        f.update(self._comunes())
+        f.update(cambios)
+        return f
+
+    def ficha_muro(self, tipo="MURO DE CONTENCION", **cambios) -> dict:
+        f = {"titulo": "MURO DE CONTENCION-MS1", "tipo_elemento": tipo, "ejes": "EJE D-E,4",
+             "plano": {"a": "240", "b": "0.25", "h": 'Ø1/2"@0.10', "i": 'Ø1/2"@0.10', "j": 'Ø1/2"@0.10', "k": 'Ø1/2"@0.10'},
+             "obra": {"a": "240", "e": "SI", "f": "0.075", "g": "0.075", "h": 'Ø1/2"@0.10', "i": 'Ø1/2"@0.10',
+                      "j": 'Ø1/2"@0.10', "k": 'Ø1/2"@0.10'},
+             "medidas": {"b": {"valor_plano_m": 0.25, "medida_acero_campo_m": 0.10}}}  # 0.10 + 2*0.075 = 0.25
+        f.update(self._comunes())
         f.update(cambios)
         return f
 
@@ -148,7 +177,7 @@ def test_orden_de_hojas_numeracion_y_rotulos_literales(mundo, entorno):
 def test_nombre_de_salida_y_version_nueva_sin_sobrescribir(mundo, entorno):
     r1 = _generar(mundo, entorno)
     r2 = _generar(mundo, entorno)
-    assert r1["ruta"].name == "Proyecto Sintetico - STP - Vigas Y Losas Sint Parcial - 15-10-2026.pdf"
+    assert r1["ruta"].name == "Proyecto Sintetico - STP - VIGAS Y LOSAS SINT Parcial - 15-10-2026.pdf"
     assert r2["ruta"].name.endswith("15-10-2026 v2.pdf") and r2["version_nueva"]
     assert r1["ruta"].read_bytes() != b"" and r1["ruta"].stat().st_size < 30_000_000
 
@@ -268,3 +297,124 @@ def test_ninguna_cadena_fija_de_terra_living_en_el_generador(archivo):
 def test_el_generador_no_importa_la_bd():
     fuente = (RAIZ_GENERADORES / "stp_mived.py").read_text(encoding="utf-8")
     assert "get_connection" not in fuente and "sqlite3" not in fuente
+
+
+# ---------- Correcciones de la Evaluación 13 ----------
+
+def _celdas_a_la_derecha(pdf: Path, pagina: int, rotulo: str, x_min: float):
+    """Palabras de la celda de VALOR de la fila de `rotulo` (la mitad PLANOS o la mitad OBRA de la tabla)."""
+    doc = pymupdf.open(str(pdf))
+    try:
+        hoja = doc[pagina]
+        r = hoja.search_for(rotulo)[0]
+        x0, x1 = (160, 305) if r.x0 < 300 else (437, 590)
+        return [w[4] for w in hoja.get_text("words") if abs(w[1] - r.y0) < 3 and x0 <= w[0] < x1]
+    finally:
+        doc.close()
+
+
+def test_b1_sin_medida_de_campo_la_celda_de_obra_queda_vacia_y_hay_duda(mundo, entorno):
+    ficha = mundo.ficha_viga()
+    ficha["medidas"]["c"] = {"valor_plano_m": 0.40, "medida_acero_campo_m": None}
+    r = _generar(mundo, entorno, [ficha])
+    assert r["ok"], r
+    assert any(d["campo_afectado"] == "medidas.c" and d["bloquea"] is False for d in r["dudas"])
+    plano = _celdas_a_la_derecha(r["ruta"], 2, "1.c. Ancho Viga (m):", 120)
+    obra = _celdas_a_la_derecha(r["ruta"], 2, "2.c. Ancho Viga (m):", 320)
+    assert "0.40" in plano  # PLANOS conserva el valor del plano
+    assert obra == []        # OBRA: nadie midió, no se copia el 0.40
+    # La fila medida sí lleva su valor de OBRA
+    assert "0.60" in _celdas_a_la_derecha(r["ruta"], 2, "2.d. Altura Viga (m):", 320)
+
+
+def test_b2_los_recubrimientos_de_obra_salen_de_la_visita_no_de_la_tabla(mundo, entorno):
+    ficha = mundo.ficha_losa()
+    ficha["obra"]["f"] = "0.030"  # lo que midió la visita
+    del ficha["obra"]["g"]
+    r = _generar(mundo, entorno, [ficha])
+    assert r["ok"], r
+    pagina = 2
+    assert _celdas_a_la_derecha(r["ruta"], pagina, "1.f. Recubrimiento Min (m):", 120) == ["0.025"]  # PLANOS: §4.5
+    assert _celdas_a_la_derecha(r["ruta"], pagina, "2.f. Recubrimiento Min (m):", 320) == ["0.030"]  # OBRA: visita
+    assert _celdas_a_la_derecha(r["ruta"], pagina, "2.g. Recubrimiento Max. (m) :", 320) == []       # sin dato: vacía
+    assert any(d["campo_afectado"] == "obra.g" and d["bloquea"] is False for d in r["dudas"])
+
+
+def test_b3_la_conformidad_exige_cero_datos_de_obra_pendientes(mundo, entorno):
+    ficha = mundo.ficha_viga()
+    ficha["medidas"]["c"]["medida_acero_campo_m"] = None
+    ficha["medidas"]["d"]["medida_acero_campo_m"] = None
+    r = _generar(mundo, entorno, [ficha])
+    insp = _textos(r["ruta"])[1]
+    assert "ACORDE A PLANOS APROBADOS" not in insp and "PENDIENTES DE VERIFICAR: 2" in insp
+    # una fila de OBRA sin dato tampoco permite la conformidad
+    ficha2 = mundo.ficha_viga()
+    del ficha2["obra"]["i"]
+    assert "ACORDE A PLANOS APROBADOS" not in _textos(_generar(mundo, entorno, [ficha2])["ruta"])[1]
+    # con todo medido y todo presente, sí
+    assert "ACORDE A PLANOS APROBADOS" in _textos(_generar(mundo, entorno)["ruta"])[1]
+
+
+def test_o1_calzos_en_planos_es_opcional_y_en_obra_se_pide_a_la_visita(mundo, entorno):
+    ficha = mundo.ficha_losa()
+    del ficha["plano"]["e"]
+    r = _generar(mundo, entorno, [ficha])
+    assert r["ok"] and not any(d["campo_afectado"] == "plano.e" for d in r["dudas"])
+    ficha = mundo.ficha_losa()
+    del ficha["obra"]["e"]
+    r = _generar(mundo, entorno, [ficha])
+    assert r["ok"] and any(d["campo_afectado"] == "obra.e" and d["bloquea"] is False for d in r["dudas"])
+
+
+def test_o3_total_de_barras_de_la_columna_debe_coincidir_con_las_barras(mundo, entorno):
+    assert _generar(mundo, entorno, [mundo.ficha_col()])["ok"]
+    ficha = mundo.ficha_col()
+    ficha["plano"]["k"] = "12"  # las barras suman 8
+    r = _generar(mundo, entorno, [ficha])
+    assert not r["ok"] and any(d["campo_afectado"] == "plano.k" for d in r["dudas"])
+    ficha["plano"]["k"] = "ocho"
+    assert not _generar(mundo, entorno, [ficha])["ok"]
+
+
+def test_o4_el_nombre_usa_elementos_txt_tal_cual_y_limpia_solo_lo_invalido(mundo, entorno):
+    r = _generar(mundo, entorno, visita=_visita(elementos_txt="Verticales Sotano S4 (S4/S3)"))
+    assert r["ok"]
+    assert r["ruta"].name == "Proyecto Sintetico - STP - Verticales Sotano S4 (S4 S3) Parcial - 15-10-2026.pdf"
+
+
+def test_o5_la_localizacion_tambien_debe_venir_de_la_carpeta_de_planos(mundo, entorno, tmp_path):
+    fuera = tmp_path / "otro.pdf"
+    _plano_pdf(fuera)
+    ficha = mundo.ficha_losa()
+    ficha["localizacion"]["pdf"] = str(fuera)
+    r = _generar(mundo, entorno, [ficha])
+    assert not r["ok"] and r["ruta"] is None
+    assert "LOCALIZACION debe salir de un plano de la carpeta de planos" in " ".join(r["errores"])
+
+
+def test_o6_muro_de_contencion_usa_las_filas_de_muro_con_recubrimiento_de_contencion(mundo, entorno):
+    r = _generar(mundo, entorno, [mundo.ficha_muro()])
+    assert r["ok"], r
+    assert _celdas_a_la_derecha(r["ruta"], 2, "1.f. Recub. Min (m):", 120) == ["0.075"]  # §4.5 contención
+    assert "1.h. As Vert. Interno :" in _textos(r["ruta"])[2]
+    assert r["discrepancias"] == []  # 0.10 + 2*0.075 = 0.25 = plano
+
+
+def test_o6_zapata_y_platea_se_excluyen_con_duda_y_el_resto_se_genera(mundo, entorno):
+    zapata = mundo.ficha_losa(titulo="ZAPATA-Z1", tipo_elemento="ZAPATA AISLADA", ejes="EJE F-11")
+    platea = mundo.ficha_losa(titulo="PLATEA-P1", tipo_elemento="PLATEA", ejes="(A-B),(1-2)")
+    r = _generar(mundo, entorno, [mundo.ficha_viga(), zapata, platea])
+    assert r["ok"], r
+    assert r["excluidos"] == ["ZAPATA-Z1", "PLATEA-P1"]
+    assert len(_textos(r["ruta"])) == 2 + 2  # portada, inspección y la viga
+    excluidas = [d for d in r["dudas"] if d.get("excluido")]
+    assert len(excluidas) == 2 and all(d["bloquea"] is False for d in excluidas)
+    # Un elemento excluido es una dato pendiente: no hay conformidad
+    assert "ACORDE A PLANOS APROBADOS" not in _textos(r["ruta"])[1]
+
+
+def test_o6_si_todo_queda_excluido_no_genera(mundo, entorno):
+    zapata = mundo.ficha_losa(titulo="ZAPATA-Z1", tipo_elemento="ZAPATA AISLADA", ejes="EJE F-11")
+    r = _generar(mundo, entorno, [zapata])
+    assert not r["ok"] and r["ruta"] is None and r["excluidos"] == ["ZAPATA-Z1"]
+    assert "Ningún elemento" in r["errores"][0]
