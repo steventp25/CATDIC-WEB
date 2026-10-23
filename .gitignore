@@ -6,3 +6,6 @@ __pycache__/
 *.png
 .pytest_cache/
 *.db
+
+# Fuentes de referencia de la fábrica (datos del cliente): nunca a git
+FABRICA/
