@@ -80,7 +80,10 @@ def inicializar_bd():
         planos_sellados TEXT DEFAULT '',
         carpeta_salida TEXT DEFAULT 'INFORMES/2.DATA PROCESADA',
         version INTEGER DEFAULT 1,
-        actualizado TEXT NOT NULL
+        actualizado TEXT NOT NULL,
+        direccion_obra TEXT DEFAULT '',      -- Etapa 3 · T7a: datos de cabecera de los informes
+        provincia TEXT DEFAULT '',
+        sector TEXT DEFAULT ''
     );
     """)
 
@@ -92,14 +95,17 @@ def inicializar_bd():
         id_elemento TEXT NOT NULL,           -- Ej: 'C1', 'Z4', 'A (2-3)', 'L9'
         tipo_elemento TEXT NOT NULL,         -- Ej: 'COLUMNA RECTANGULAR', 'VIGA HORMIGON', 'LOSA ALIGERADA'
         nivel_rango TEXT NOT NULL,           -- Ej: 'FUNDACION', 'S-4', 'E3@E8' (según título impreso en hoja)
-        ejes TEXT NOT NULL,                  -- Formateado según regla Archivo 02 ('—' en losas)
+        ejes TEXT NOT NULL,                  -- Formato CLAUDE.md §4.4 ('—' en losas, nunca deducido)
         hoja_plano_origen TEXT NOT NULL,     -- Ej: 'ES-05'
         archivo_plano_origen TEXT NOT NULL,  -- Ej: 'TERRA LIVING -ESTRUCTURALES.pdf'
         datos_diseno_json TEXT NOT NULL,     -- Dimensiones, acero, estribos, elementos de borde
         estado_campos_json TEXT NOT NULL,    -- Cada campo marcado 'confirmado' o 'pendiente_de_verificar'
         recorte_planta_json TEXT DEFAULT '{}',  -- Coordenadas del recuadro rojo en planta completa
         recorte_detalle_json TEXT DEFAULT '{}', -- Coordenadas del detalle/tabla en el plano
-        actualizado TEXT NOT NULL
+        actualizado TEXT NOT NULL,
+        fuente_json TEXT DEFAULT '{}',       -- Etapa 2 · T1: documento fuente, sección/línea y SHA-256
+        pendientes_json TEXT DEFAULT '[]',   -- Etapa 2 · T1: campos 'pendiente de verificar'
+        UNIQUE(proyecto_id, id_elemento, nivel_rango, ejes)
     );
     """)
 
@@ -181,6 +187,8 @@ def inicializar_bd():
     # Migraciones idempotentes de tablas ya existentes
     migrar_visitas()
     agregar_columna_origen_visitas()
+    migrar_elementos_diseno()
+    migrar_proyectos_cabecera()
 
 # ---------- Migración de 'visitas' (Etapa 1 · T2) ----------
 
@@ -328,6 +336,120 @@ def agregar_columna_origen_visitas() -> dict:
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
+    finally:
+        conn.close()
+
+# ---------- Migración de 'elementos_diseno' (Etapa 2 · T1) ----------
+COLUMNAS_NUEVAS_DISENO = (("fuente_json", "'{}'"), ("pendientes_json", "'[]'"))
+CLAVE_UNICA_DISENO = ["proyecto_id", "id_elemento", "nivel_rango", "ejes"]
+INDICE_UNICO_DISENO = "ux_elementos_diseno_clave"
+
+def _diseno_tiene_unico(conn) -> bool:
+    for idx in conn.execute("PRAGMA index_list(elementos_diseno)").fetchall():
+        if idx[2]:  # unique
+            cols = [r[2] for r in conn.execute(f"PRAGMA index_info('{idx[1]}')")]
+            if cols == CLAVE_UNICA_DISENO:
+                return True
+    return False
+
+def migrar_elementos_diseno() -> dict:
+    """
+    Etapa 2 · T1: añade fuente_json y pendientes_json y el UNIQUE
+    (proyecto_id, id_elemento, nivel_rango, ejes) a una 'elementos_diseno' vieja.
+    Se hace con ALTER TABLE ADD COLUMN + CREATE UNIQUE INDEX: no reconstruye la tabla,
+    así conserva las filas y las FK de elementos_visita.elemento_diseno_uid.
+    Idempotente; respalda la BD antes y audita en la misma transacción.
+    Si hay duplicados previos, el índice falla, se revierte todo y no se borra nada.
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        existe = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='elementos_diseno'").fetchone()
+        if not existe:
+            return {"migrada": False, "motivo": "tabla elementos_diseno no existe", "respaldo": None}
+        columnas = {r[1] for r in conn.execute("PRAGMA table_info(elementos_diseno)")}
+        faltan = [(c, d) for c, d in COLUMNAS_NUEVAS_DISENO if c not in columnas]
+        falta_unico = not _diseno_tiene_unico(conn)
+        if not faltan and not falta_unico:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for c, d in faltan:
+                conn.execute(f"ALTER TABLE elementos_diseno ADD COLUMN {c} TEXT DEFAULT {d}")
+            if falta_unico:
+                conn.execute(
+                    f"CREATE UNIQUE INDEX {INDICE_UNICO_DISENO} ON elementos_diseno "
+                    f"({', '.join(CLAVE_UNICA_DISENO)})")
+            filas = conn.execute("SELECT COUNT(*) FROM elementos_diseno").fetchone()[0]
+            violaciones = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violaciones:
+                raise sqlite3.IntegrityError(
+                    f"Migración de elementos_diseno abortada: {len(violaciones)} violaciones FK")
+            detalle = {
+                "respaldo": respaldo.name,
+                "filas_conservadas": filas,
+                "columnas_nuevas": [c for c, _ in faltan],
+                "unique_creado": CLAVE_UNICA_DISENO if falta_unico else None,
+            }
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_ELEMENTOS_DISENO",
+                  "elementos_diseno", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
+    finally:
+        conn.close()
+
+# ---------- Migración de 'proyectos' (Etapa 3 · T7a) ----------
+COLUMNAS_CABECERA_PROYECTO = ("direccion_obra", "provincia", "sector")
+
+def migrar_proyectos_cabecera() -> dict:
+    """
+    Etapa 3 · T7a: añade direccion_obra, provincia y sector a 'proyectos' (TEXT, por defecto '').
+    ALTER TABLE ADD COLUMN: no reconstruye la tabla ni toca las filas. Idempotente; respalda la BD
+    antes y audita en la misma transacción. Los valores NO se siembran: los llena Steven (P11),
+    mientras tanto el generador pone "pendiente de verificar".
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        existe = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proyectos'").fetchone()
+        if not existe:
+            return {"migrada": False, "motivo": "tabla proyectos no existe", "respaldo": None}
+        columnas = {r[1] for r in conn.execute("PRAGMA table_info(proyectos)")}
+        faltan = [c for c in COLUMNAS_CABECERA_PROYECTO if c not in columnas]
+        if not faltan:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for c in faltan:
+                conn.execute(f"ALTER TABLE proyectos ADD COLUMN {c} TEXT DEFAULT ''")
+            filas = conn.execute("SELECT COUNT(*) FROM proyectos").fetchone()[0]
+            detalle = {"respaldo": respaldo.name, "filas_conservadas": filas, "columnas_nuevas": faltan}
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_PROYECTOS_CABECERA",
+                  "proyectos", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
     finally:
         conn.close()
 
