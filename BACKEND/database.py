@@ -80,7 +80,10 @@ def inicializar_bd():
         planos_sellados TEXT DEFAULT '',
         carpeta_salida TEXT DEFAULT 'INFORMES/2.DATA PROCESADA',
         version INTEGER DEFAULT 1,
-        actualizado TEXT NOT NULL
+        actualizado TEXT NOT NULL,
+        direccion_obra TEXT DEFAULT '',      -- Etapa 3 · T7a: datos de cabecera de los informes
+        provincia TEXT DEFAULT '',
+        sector TEXT DEFAULT ''
     );
     """)
 
@@ -185,6 +188,7 @@ def inicializar_bd():
     migrar_visitas()
     agregar_columna_origen_visitas()
     migrar_elementos_diseno()
+    migrar_proyectos_cabecera()
 
 # ---------- Migración de 'visitas' (Etapa 1 · T2) ----------
 
@@ -396,6 +400,50 @@ def migrar_elementos_diseno() -> dict:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_ELEMENTOS_DISENO",
                   "elementos_diseno", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
+    finally:
+        conn.close()
+
+# ---------- Migración de 'proyectos' (Etapa 3 · T7a) ----------
+COLUMNAS_CABECERA_PROYECTO = ("direccion_obra", "provincia", "sector")
+
+def migrar_proyectos_cabecera() -> dict:
+    """
+    Etapa 3 · T7a: añade direccion_obra, provincia y sector a 'proyectos' (TEXT, por defecto '').
+    ALTER TABLE ADD COLUMN: no reconstruye la tabla ni toca las filas. Idempotente; respalda la BD
+    antes y audita en la misma transacción. Los valores NO se siembran: los llena Steven (P11),
+    mientras tanto el generador pone "pendiente de verificar".
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        existe = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proyectos'").fetchone()
+        if not existe:
+            return {"migrada": False, "motivo": "tabla proyectos no existe", "respaldo": None}
+        columnas = {r[1] for r in conn.execute("PRAGMA table_info(proyectos)")}
+        faltan = [c for c in COLUMNAS_CABECERA_PROYECTO if c not in columnas]
+        if not faltan:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for c in faltan:
+                conn.execute(f"ALTER TABLE proyectos ADD COLUMN {c} TEXT DEFAULT ''")
+            filas = conn.execute("SELECT COUNT(*) FROM proyectos").fetchone()[0]
+            detalle = {"respaldo": respaldo.name, "filas_conservadas": filas, "columnas_nuevas": faltan}
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_PROYECTOS_CABECERA",
+                  "proyectos", json.dumps(detalle, ensure_ascii=False)))
             conn.execute("COMMIT")
         except Exception:
             if conn.in_transaction:
