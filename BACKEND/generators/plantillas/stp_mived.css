@@ -1,0 +1,26 @@
+/* STP-MIVED: maquetación portada de lib_pages.py (Etapa 3 · T7). Fuentes de Windows: Calibri y Arial. */
+@page{size:Letter;margin:0}
+*{box-sizing:border-box}
+body{margin:0;font-family:Calibri,Arial,sans-serif;color:#000}
+.pg{width:8.5in;height:11in;position:relative;padding:0.45in 0.4in 0.5in 0.4in;page-break-after:always;overflow:hidden}
+.foot{position:absolute;left:0.4in;right:0.4in;bottom:0.32in;font-size:8pt;display:flex;justify-content:space-between;font-family:Arial,sans-serif}
+table{border-collapse:collapse;width:100%}
+td{border:1px solid #000;font-size:7.6pt;padding:2px 4px;vertical-align:middle}
+.hd td{height:17px}
+.bar td{text-align:center;font-size:7.6pt}
+.imgs{display:flex;height:2.15in;border-left:1px solid #000;border-right:1px solid #000;border-bottom:1px solid #000}
+.imgs div{flex:1;display:flex;align-items:center;justify-content:center;padding:6px}
+.imgs img{max-width:100%;max-height:100%;object-fit:contain}
+.cmp td{height:19.5px}
+.cmp td.l{width:24%} .cmp td.v{width:26%}
+.title{border:1px solid #000;text-align:center;font-family:Arial,sans-serif;font-size:9pt;padding:3px;margin-bottom:10px}
+.toprow{display:flex;gap:12px;height:2.6in;margin-bottom:10px}
+.toprow div{flex:1;display:flex;align-items:center;justify-content:center}
+.toprow img{max-width:100%;max-height:100%;object-fit:contain}
+.fotos{height:6.55in;display:flex;align-items:center;justify-content:center}
+.fotos img{max-width:100%;max-height:100%;object-fit:contain}
+.cover{display:flex;flex-direction:column;align-items:center;font-family:Arial,sans-serif;text-align:center}
+.cover .k{font-weight:bold;font-size:11pt;margin-top:1.05in}
+.cover .v{font-size:11pt;margin-top:6px}
+.insp{background:#efefef}
+.insp td{font-size:7.6pt;height:22px}
