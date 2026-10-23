@@ -35,15 +35,26 @@ def _pdf_visita(ruta, paginas, ancho=612, alto=792, solo_texto_extra=None):
     for i, p in enumerate(paginas, start=1):
         hoja = doc.new_page(width=ancho, height=alto)
         hoja.insert_text((56, 30), "Contacto: SINTETICO", fontname="hebo", fontsize=10)
-        hoja.insert_image(pymupdf.Rect(56, 99, 465, 644), stream=_jpeg(p.get("color", (120, 110, 100)), (3000, 2000) if p.get("ruido") else (768, 1024),
+        hoja.insert_text((283, 30), "Creado el: vie, 2/10/2026", fontname="hebo", fontsize=10)  # cabecera: no cuenta
+        rect = pymupdf.Rect(56, 68, 400, 678) if p.get("lado") else pymupdf.Rect(56, 99, 465, 644)
+        hoja.insert_image(rect, stream=_jpeg(p.get("color", (120, 110, 100)), (3000, 2000) if p.get("ruido") else ((688, 1220) if p.get("lado") else (768, 1024)),
                                        ruido=p.get("ruido", False)),
                           rotate=p.get("rotar", 0))
+        if p.get("lado"):  # foto apaisada de la #18: 'Creado' / 'el:' / fecha A LA DERECHA de la foto
+            hoja.insert_text((407, 80), "Creado", fontname="hebo", fontsize=10)
+            hoja.insert_text((407, 92), "el:", fontname="hebo", fontsize=10)
+            hoja.insert_text((465, 80), "vie, 2/10/2026", fontname="helv", fontsize=10)
+            continue
         hoja.insert_image(pymupdf.Rect(56, 25, 100, 70), stream=_jpeg((5, 5, 5), (64, 64)))  # logo
         y = 660
         if p.get("etiqueta"):
             hoja.insert_text((56, y), p["etiqueta"], fontname="hebo", fontsize=12)
             y += 20
-        hoja.insert_text((56, y), f"Creado el: 28/09/2026 11:{i:02d}", fontname="hebo", fontsize=10)
+        if p.get("hora_junta"):  # #20: un solo texto
+            hoja.insert_text((56, y), f"Creado el: 28/09/2026 11:{i:02d}", fontname="hebo", fontsize=10)
+        else:  # #17: 'Creado el:' y la hora son líneas distintas a la misma altura
+            hoja.insert_text((56, y), "Creado el:", fontname="hebo", fontsize=10)
+            hoja.insert_text((117, y), f"28/09/2026 11:{i:02d}", fontname="helv", fontsize=10)
         if p.get("nota"):
             hoja.insert_text((56, y + 16), p["nota"], fontname="helv", fontsize=10)
         hoja.insert_text((480, 760), f"Id. de doc. 29 pagina {i} de {len(paginas)}", fontname="helv", fontsize=10)
@@ -107,6 +118,35 @@ def test_lee_etiquetas_notas_y_orden_de_paginas(entorno):
     assert p[2]["etiqueta"] == "L5" and p[0]["hora"] == "28/09/2026 11:01"
 
 
+@pytest.mark.parametrize("junta", [False, True])
+def test_b1_la_hora_se_toma_por_su_altura_no_se_confunde_con_la_nota(entorno, junta):
+    pdf = _pdf_visita(entorno / "v.pdf", [{"etiqueta": "Mh4", "hora_junta": junta},
+                                          {"hora_junta": junta, "nota": "texto libre"}])
+    p = lector_visita.leer_pdf_visita(pdf)
+    assert [x["hora"] for x in p] == ["28/09/2026 11:01", "28/09/2026 11:02"]
+    assert p[0]["nota"] == "" and p[1]["nota"] == "texto libre"
+
+
+def test_b2_creado_el_a_la_derecha_de_una_foto_apaisada_en_lineas_partidas(entorno):
+    pdf = _pdf_visita(entorno / "v.pdf", [{"lado": True}, {"etiqueta": "Tramo C-D"}, {"lado": True}])
+    p = lector_visita.leer_pdf_visita(pdf)
+    assert [x["pagina"] for x in p] == [1, 2, 3]
+    assert [x["etiqueta"] for x in p] == ["", "Tramo C-D", ""]
+    assert p[0]["hora"] == "vie, 2/10/2026" and p[0]["nota"] == ""  # no se cuenta la cabecera
+    assert p[0]["foto_bbox"][3] > 600
+
+
+def test_b2_la_cabecera_sola_no_cuenta_como_creado_el(entorno):
+    doc = pymupdf.open()
+    hoja = doc.new_page(width=595, height=841)
+    hoja.insert_image(pymupdf.Rect(56, 68, 400, 678), stream=_jpeg())
+    hoja.insert_text((283, 30), "Creado el: vie, 2/10/2026", fontname="hebo", fontsize=10)  # solo en la cabecera
+    doc.save(str(entorno / "sin.pdf"))
+    doc.close()
+    with pytest.raises(ValueError, match="sin 'Creado el:'"):
+        lector_visita.leer_pdf_visita(entorno / "sin.pdf")
+
+
 def test_la_foto_principal_es_la_grande_no_el_logo(entorno):
     pdf = _pdf_visita(entorno / "v.pdf", [{"etiqueta": "L1"}])
     bbox = lector_visita.leer_pdf_visita(pdf)[0]["foto_bbox"]
@@ -139,6 +179,11 @@ def test_interpretar_etiqueta(etiqueta, esperado):
     r = lector_visita.interpretar_etiqueta(etiqueta)
     assert (r["id_elemento"], r["ejes"]) == esperado
     assert r["tipo_elemento"] == PENDIENTE  # el tipo nunca se deduce
+
+
+def test_o2_el_id_se_guarda_tal_cual_sin_mayusculas():
+    r = lector_visita.interpretar_etiqueta("c1 A4")
+    assert (r["id_elemento"], r["ejes"]) == ("c1", "EJE A-4")
 
 
 def test_nivel_solo_si_la_carpeta_trae_exactamente_uno():
@@ -200,6 +245,61 @@ def test_c1_a4_queda_reconocido_sin_duda(entorno):
     f = _filas()[0]
     assert (f["id_elemento"], f["ejes"]) == ("C1", "EJE A-4")
     assert _dudas() == []
+
+
+@pytest.mark.parametrize("estado,esperado", [
+    ("Sin procesar", "Con dudas"), ("En cola", "Con dudas"), ("Con dudas", "Con dudas"),
+    ("Procesada", "Procesada"), ("En proceso", "En proceso"), ("En revisión", "En revisión"),
+])
+def test_o1_visita_abierta_con_bloqueantes_pasa_a_con_dudas_las_avanzadas_no(entorno, estado, esperado):
+    with _bd() as c:
+        c.execute("UPDATE visitas SET estado = ? WHERE id = ?", (estado, VISITA_ID))
+    pdf = _pdf_visita(entorno / "v.pdf", PAGINAS)
+    lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)
+    with _bd() as c:
+        assert c.execute("SELECT estado FROM visitas WHERE id = ?", (VISITA_ID,)).fetchone()[0] == esperado
+        assert len(_dudas()) == 3
+
+
+def test_o1_un_pdf_rechazado_tambien_pasa_la_visita_a_con_dudas(entorno):
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Plano")
+    doc.save(str(entorno / "plano.pdf"))
+    doc.close()
+    with pytest.raises(ValueError):
+        lector_visita.cargar_visita(VISITA_ID, ruta_pdf=entorno / "plano.pdf")
+    with _bd() as c:
+        assert c.execute("SELECT estado FROM visitas WHERE id = ?", (VISITA_ID,)).fetchone()[0] == "Con dudas"
+
+
+def test_o5_respalda_por_defecto_y_tambien_antes_de_rechazar(entorno):
+    pdf = _pdf_visita(entorno / "v.pdf", PAGINAS)
+    lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)  # sin pasar respaldar
+    respaldos = list((entorno / "bd").glob("catdic_prueba.backup-*.db"))
+    assert len(respaldos) == 1
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Plano")
+    doc.save(str(entorno / "plano.pdf"))
+    doc.close()
+    with pytest.raises(ValueError):
+        lector_visita.cargar_visita(VISITA_ID, ruta_pdf=entorno / "plano.pdf")
+    assert len(list((entorno / "bd").glob("catdic_prueba.backup-*.db"))) == 2  # el rechazo también respaldó
+
+
+def test_actualiza_fotos_json_sin_duplicar_filas_ni_dudas_cuando_cambia_la_hora(entorno):
+    pdf = _pdf_visita(entorno / "v.pdf", PAGINAS)
+    lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)
+    with _bd() as c:  # simula la BD vieja de T3: hora nula y la hora guardada como nota
+        for f in _filas():
+            fotos = json.loads(f["fotos_json"])
+            for foto in fotos:
+                foto["nota"], foto["hora"] = foto["hora"], None
+            c.execute("UPDATE elementos_visita SET fotos_json = ? WHERE uid = ?", (json.dumps(fotos), f["uid"]))
+    r = lector_visita.cargar_visita(VISITA_ID, ruta_pdf=pdf)
+    assert r["filas_nuevas"] == 0 and r["filas_actualizadas"] == 3 and r["dudas_nuevas"] == 0
+    fotos = [x for f in _filas() for x in json.loads(f["fotos_json"])]
+    assert all(x["hora"] and x["nota"] == "" for x in fotos) and len(fotos) == 7
+    assert len(_filas()) == 3 and len(_dudas()) == 3
 
 
 def test_nota_guardada_tal_cual_en_fotos_json(entorno):

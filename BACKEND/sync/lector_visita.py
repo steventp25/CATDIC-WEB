@@ -23,6 +23,7 @@ from PIL import Image, ImageOps
 
 import config
 from database import get_connection, _respaldar_bd
+from sync.sincronizador import ESTADO_CON_DUDAS, ESTADOS_ABIERTOS
 from reglas_ingenieria import (
     PENDIENTE,
     agrupar_log_fotografico_visita,
@@ -36,6 +37,7 @@ ACCION_CARGAR = "CARGAR_VISITA"
 ACCION_RECHAZAR = "RECHAZAR_PDF_VISITA"
 DUDA = "DUDA_BLOQUEANTE"
 CAMPO_PDF_VISITA = "lector_visita"
+ORIGEN_ESTADO_LECTOR = "lector_visita"  # origen_datos_json["estado"] cuando el lector abre dudas
 LADO_MAXIMO_PX = 1000   # §5.2
 CALIDAD_JPG = 72        # §5.2
 TAM_ETIQUETA_PT = 11.5  # la etiqueta mide 12 pt; "Creado el:" y las notas, 10 pt
@@ -78,32 +80,56 @@ def _foto_principal(pagina) -> Optional[dict]:
 
 
 def _leer_texto_pagina(pagina, foto_bbox) -> Dict:
-    """Etiqueta (span 12 pt negrita), hora y nota libre del texto situado bajo la foto."""
+    """
+    Etiqueta (span 12 pt negrita), hora y nota libre del texto de la ZONA de la foto: debajo de ella
+    o a su derecha (las fotos apaisadas de la #18 llevan 'Creado el:' al lado). Quedan fuera la
+    cabecera (sobre la foto), el pie y la numeración '(n)'. 'Creado' y 'el:' pueden venir en líneas
+    distintas y la hora va en su propia línea: se toma por su posición vertical, no por la línea.
+    """
+    x0f, y0f, x1f, y1f = foto_bbox
     pie = pagina.rect.height - 100  # "Id. de doc." / "página N de M" / "Generado por": no son contenido
-    etiqueta, nota, hora = [], [], None
-    creado_visto = False
+    tokens = []
     for bloque in pagina.get_text("dict")["blocks"]:
         if bloque["type"] != 0:
             continue
         for linea in bloque["lines"]:
-            if linea["bbox"][1] < foto_bbox[3] - 1 or linea["bbox"][1] >= pie:
+            lx0, ly0 = linea["bbox"][0], linea["bbox"][1]
+            debajo = ly0 >= y1f - 1
+            a_la_derecha = lx0 >= x1f - 1 and ly0 >= y0f - 1
+            if not (debajo or a_la_derecha) or ly0 >= pie:
                 continue
-            spans = [s for s in linea["spans"] if s["text"].strip()]
-            for i, s in enumerate(spans):
-                texto = s["text"]
-                es_negrita = "bold" in s["font"].lower() or bool(s["flags"] & 16)
-                m = _RE_CREADO.match(texto)
-                if m:
-                    creado_visto = True
-                    resto = m.group(1).strip() or "".join(x["text"] for x in spans[i + 1:]).strip()
-                    hora = resto or hora
-                    break
-                if creado_visto:
-                    nota.append(texto.strip())
-                elif s["size"] >= TAM_ETIQUETA_PT and es_negrita:
-                    etiqueta.append(texto.strip())
+            for s in linea["spans"]:
+                if s["text"].strip():
+                    tokens.append({"texto": s["text"], "tam": s["size"], "y": s["bbox"][1],
+                                   "negrita": "bold" in s["font"].lower() or bool(s["flags"] & 16)})
+    etiqueta, hora, nota = [], [], []
+    marcador_y = None
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if marcador_y is None:
+            m = _RE_CREADO.match(t["texto"])
+            partido = (t["texto"].strip() == "Creado" and i + 1 < len(tokens)
+                       and tokens[i + 1]["texto"].strip().startswith("el:"))
+            if m:
+                marcador_y = t["y"]
+                if m.group(1).strip():
+                    hora.append(m.group(1).strip())
+            elif partido:  # 'Creado' y 'el:' en líneas distintas
+                marcador_y = t["y"]
+                resto = tokens[i + 1]["texto"].strip()[3:].strip()
+                if resto:
+                    hora.append(resto)
+                i += 1
+            elif t["tam"] >= TAM_ETIQUETA_PT and t["negrita"]:
+                etiqueta.append(t["texto"].strip())
+        elif abs(t["y"] - marcador_y) <= 3:  # la hora comparte la altura de 'Creado el:'
+            hora.append(t["texto"].strip())
+        else:
+            nota.append(t["texto"].strip())
+        i += 1
     return {"etiqueta": " ".join(etiqueta).strip(), "nota": " ".join(nota).strip(),
-            "hora": hora, "tiene_creado": creado_visto}
+            "hora": " ".join(hora).strip() or None, "tiene_creado": marcador_y is not None}
 
 
 def leer_pdf_visita(ruta_pdf: Path) -> List[Dict]:
@@ -182,7 +208,7 @@ def interpretar_etiqueta(etiqueta: str) -> Dict[str, str]:
     elif len(tokens) == 2 and _RE_ID.fullmatch(tokens[0].upper()):
         ejes = _ejes(tokens[1])
         if ejes:
-            resultado.update(id_elemento=tokens[0].upper(), ejes=ejes)
+            resultado.update(id_elemento=tokens[0], ejes=ejes)  # tal cual: normalizar lo decide Steven
     return resultado
 
 
@@ -256,12 +282,35 @@ def _insertar_duda(conn, visita, id_elemento: str, campo: str, texto: str) -> bo
     return True
 
 
+def _marcar_con_dudas(conn, visita) -> Optional[str]:
+    """
+    Misma regla que el sync: una visita 'Sin procesar' o 'En cola' con bloqueantes abiertas pasa a
+    'Con dudas' (T10 no debe tomarla para procesar). Las avanzadas (En proceso, En revisión,
+    Procesada) nunca se tocan. Devuelve el estado nuevo, o None si no cambió.
+    """
+    if visita["estado"] not in ESTADOS_ABIERTOS or visita["estado"] == ESTADO_CON_DUDAS:
+        return None
+    abiertas = conn.execute("""SELECT COUNT(*) FROM dudas_y_hallazgos WHERE visita_id = ?
+                               AND categoria = ? AND resuelta = 0""", (visita["id"], DUDA)).fetchone()[0]
+    if not abiertas:
+        return None
+    try:
+        origen = json.loads(visita["origen_datos_json"] or "{}")
+        origen = origen if isinstance(origen, dict) else {}
+    except ValueError:
+        origen = {}
+    origen["estado"] = ORIGEN_ESTADO_LECTOR
+    conn.execute("UPDATE visitas SET estado = ?, origen_datos_json = ?, actualizado = ? WHERE id = ?",
+                 (ESTADO_CON_DUDAS, _json(origen), _ahora(), visita["id"]))
+    return ESTADO_CON_DUDAS
+
+
 def cargar_visita(visita_id: str, ruta_pdf: Optional[Path] = None, usuario: Optional[str] = None,
-                  respaldar: bool = False) -> Dict:
+                  respaldar: bool = True) -> Dict:
     """
     Lee el PDF de la visita y carga sus elementos a `elementos_visita`. Idempotente por
     (visita_id, orden_en_log): una segunda corrida no duplica filas ni dudas.
-    - respaldar=True saca un respaldo de la BD antes de escribir (usar con la BD real).
+    - respaldar=True (por defecto) saca un respaldo de la BD antes de escribir, también si el PDF se rechaza.
     - Un PDF sin estructura de visita no carga nada: crea una duda y lanza ValueError.
     """
     usuario = usuario or getpass.getuser()
@@ -276,8 +325,11 @@ def cargar_visita(visita_id: str, ruta_pdf: Optional[Path] = None, usuario: Opti
         try:
             paginas = leer_pdf_visita(pdf)
         except ValueError as e:
+            if respaldar:
+                _respaldar_bd(conn, Path(config.obtener_db_path()))
             conn.execute("BEGIN")
             _insertar_duda(conn, visita, "", CAMPO_PDF_VISITA, str(e))
+            _marcar_con_dudas(conn, visita)
             conn.execute("""INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
                             VALUES (?, ?, ?, ?, ?, ?)""", (_ahora(), usuario, MODULO_AUDITORIA, ACCION_RECHAZAR,
                                                            visita_id, _json({"pdf": str(pdf), "motivo": str(e)})))
@@ -322,7 +374,9 @@ def cargar_visita(visita_id: str, ruta_pdf: Optional[Path] = None, usuario: Opti
                     if _insertar_duda(conn, visita, g["etiqueta_original"] or "(sin etiqueta)",
                                       f"elemento_visita:p{g['orden_en_log']:03d}", _texto_duda(g)):
                         dudas_nuevas += 1
+            estado_nuevo = _marcar_con_dudas(conn, visita)
             detalle = {"pdf": str(pdf), "paginas": len(paginas), "grupos": len(grupos),
+                       "estado_anterior": visita["estado"], "estado_nuevo": estado_nuevo or visita["estado"],
                        "filas_nuevas": nuevas, "filas_actualizadas": actualizadas, "sin_cambios": sin_cambios,
                        "dudas_nuevas": dudas_nuevas, "cache": str(carpeta_cache),
                        "respaldo": respaldo.name if respaldo else None}
