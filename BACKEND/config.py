@@ -26,3 +26,14 @@ def obtener_db_path() -> Path:
     """Ruta de la BD: variable de entorno si existe; si no, el valor por defecto."""
     valor = os.environ.get(ENV_DB_PATH, "").strip()
     return Path(valor) if valor else Path(DB_PATH)
+
+
+# Etapa 3 · T6 (D1): carpeta de salida de pruebas de los generadores. Nada fijo al usuario:
+# variable de entorno CATDIC_SALIDA_PRUEBAS o, si no existe, <carpeta del usuario>\CATDIC-SALIDA-PRUEBAS.
+ENV_SALIDA_PRUEBAS = "CATDIC_SALIDA_PRUEBAS"
+
+
+def obtener_salida_pruebas() -> Path:
+    """Carpeta donde los generadores escriben mientras se prueban (nunca Dropbox, P3)."""
+    valor = os.environ.get(ENV_SALIDA_PRUEBAS, "").strip()
+    return Path(valor) if valor else Path.home() / "CATDIC-SALIDA-PRUEBAS"
