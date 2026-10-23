@@ -34,8 +34,17 @@ EXTRA_NO_MARCAR = {
 }
 
 
+ROTULOS_CABECERA = [  # (rótulo, x del rótulo, base, clave, x del valor, base del valor) medidos en los FI
+    ("Nombre del proyecto", 19.0, 116.2, "nombre", 123.1, 115.9),
+    ("Licencia No.", 438.9, 116.2, "no_licencia", 505.0, 113.2),
+    ("Sol. Licencia No.", 421.0, 130.1, "no_solicitud", 505.0, 130.0),
+    ("Encargado de obra", 16.7, 144.0, "residente_obra", 132.2, 142.6),
+    ("Dirección", 16.7, 157.9, "direccion_obra", 119.8, 157.1),
+]
+
+
 def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), omitir=(), firmas=True,
-             anotacion=True) -> Path:
+             anotacion=True, cabecera=None, sin_caja=()) -> Path:
     """FI sintético: filas con 'Sí'/'No' y su caja en las hojas 1..n-1; observaciones y firmas en la última."""
     doc = pymupdf.open()
     codigos = sorted(FILAS_SI[tipo] | set(EXTRA_NO_MARCAR[tipo]), key=lambda c: (int(re.match(r"\d+", c).group()), c))
@@ -49,6 +58,10 @@ def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), om
         if n == 0:
             pag.insert_text((16.7, 130.1), "Nivel a inspeccionar", fontsize=10.6)
             pag.insert_text((401.3, 144.0), "Fecha", fontsize=10.6)
+            for rotulo, xr, yr, clave, xv, yv in ROTULOS_CABECERA:
+                pag.insert_text((xr, yr), rotulo, fontsize=10.6)
+                if cabecera and cabecera.get(clave):
+                    pag.insert_text((xv, yv), cabecera[clave], fontsize=10.6)
             if nivel:
                 pag.insert_text((132.2, 130.0), nivel, fontsize=10.6)
             if fecha:
@@ -66,7 +79,8 @@ def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), om
                 paso = 27
             pag.insert_text((524.9, y + 10), "Sí", fontsize=10.6)
             pag.insert_text((564.6, y + 10), "No", fontsize=10.6)
-            pag.insert_image(pymupdf.Rect(505.3, y + 2.6, 553.9, y + 11.8), stream=png)
+            if c not in sin_caja:  # la fila 7c del FI-02 real no trae caja propia
+                pag.insert_image(pymupdf.Rect(505.3, y + 2.6, 553.9, y + 11.8), stream=png)
             y += paso
     pag = doc.new_page(width=595.32, height=841.92)
     pag.insert_text((194.6, 484.8), "13. OBSERVACIONES", fontsize=10.6, fontname="hebo")
@@ -98,7 +112,8 @@ def entorno(tmp_path, monkeypatch):
     return tmp_path
 
 
-PROYECTO = {"nombre": "Proyecto Sintetico"}
+PROYECTO = {"nombre": "Proyecto Sintetico", "no_licencia": "LIC-SINT", "no_solicitud": "SOL-SINT",
+            "residente_obra": "RESIDENTE SINT", "direccion_obra": "CALLE SINTETICA 1"}  # SINTÉTICO
 
 
 def _visita(**cambios):
@@ -218,14 +233,21 @@ def test_si_falta_una_fila_obligatoria_no_marca_a_ciegas(entorno):
     assert not (entorno / "salida").exists()
 
 
-def test_fechas_de_autorizacion_quedan_en_blanco(entorno, existente):
+def _palabras_de_firmas(ruta: Path):
+    doc = pymupdf.open(str(ruta))
+    try:
+        return [w[4] for w in doc[-1].get_text("words") if w[1] > 770 and w[0] >= 460]
+    finally:
+        doc.close()
+
+
+def test_las_fechas_de_autorizacion_anteriores_se_conservan_y_no_se_escribe_ninguna_nueva(entorno, existente):
     r = _llamar(entorno, existente=existente)
-    doc = pymupdf.open(str(r["ruta"]))
-    palabras = [w[4] for w in doc[-1].get_text("words") if w[1] > 770 and w[0] >= 460]
-    textos = doc[-1].get_text()
-    doc.close()
-    assert "NOMBRE SINT" in textos  # el resto de la sección de firmas sigue
-    assert not [w for w in palabras if w in ("02", "10", "2026")]
+    assert {"02", "10", "2026"} <= set(_palabras_de_firmas(r["ruta"]))  # histórico de visitas anteriores
+    # Un FI en blanco no recibe ninguna fecha de autorización nueva
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", firmas=False)
+    r2 = _llamar(entorno, en_blanco=blanco)
+    assert r2["ok"] and not [w for w in _palabras_de_firmas(r2["ruta"]) if re.fullmatch(r"\d{2}|\d{4}", w)]
 
 
 # ---------- P5 y #18 ----------
@@ -235,6 +257,19 @@ def test_no_actualiza_el_fi_de_otro_nivel_error_18(entorno):
     r = _llamar(entorno, existente=otro)
     assert not r["ok"] and "otro nivel" in r["errores"][0]
     assert not (entorno / "salida").exists()
+
+
+def test_la_clave_de_nivel_respeta_limites_de_palabra_y_rechaza_claves_genericas_o3(entorno):
+    otro = crear_fi(entorno / "n30.pdf", "FI-02", nivel="LOSAS Y VIGAS ENTREPISO SOTANO -30", obs=["x"])
+    r = _llamar(entorno, existente=otro, nivel_clave="SOTANO -3")  # no encaja en SOTANO -30
+    assert not r["ok"] and "otro nivel" in r["errores"][0]
+    ok = crear_fi(entorno / "n3.pdf", "FI-02", nivel="LOSAS Y VIGAS ENTREPISO SOTANO -3 PARCIAL", obs=["x"])
+    assert _llamar(entorno, existente=ok, nivel_clave="SOTANO -3")["ok"]
+    generico = _llamar(entorno, existente=ok, nivel_clave="SOTANO")  # sin número y no es el nivel completo
+    assert not generico["ok"] and "genérica" in generico["errores"][0]
+    # Una clave sin número vale solo si es el nivel completo del FI (p. ej. 'FUNDACIONES')
+    fund = crear_fi(entorno / "fund.pdf", "FI-02", nivel="FUNDACIONES", obs=["x"])
+    assert _llamar(entorno, existente=fund, nivel_clave="FUNDACIONES", nivel_txt="FUNDACIONES")["ok"]
 
 
 def test_parte_del_fi_en_blanco_si_no_existe_uno(entorno):
@@ -247,6 +282,62 @@ def test_parte_del_fi_en_blanco_si_no_existe_uno(entorno):
     assert NIVEL in p1 and "15/10/2026" in p1
     for marcador in ("dd", "mm", "aaaa"):
         assert marcador not in p1  # el 'dd / mm / aaaa' del formulario se tapa
+
+
+def _valor_en_fila(ruta: Path, rotulo: str, lado_der: bool = False) -> str:
+    """Texto escrito en la fila del rótulo (a la derecha de él), de la mitad izquierda o derecha del formulario."""
+    doc = pymupdf.open(str(ruta))
+    try:
+        p1 = doc[0]
+        r = min(p1.search_for(rotulo), key=lambda h: h.y0)  # "Licencia No." también aparece dentro de "Sol. Licencia No."
+        palabras = [w for w in p1.get_text("words") if abs(w[3] - r.y1) < 5 and w[0] >= r.x1 - 3
+                    and (w[0] >= 400 if lado_der else w[0] < 398)]
+        return fi_mived.limpiar_extraido(" ".join(w[4] for w in sorted(palabras, key=lambda w: w[0])))
+    finally:
+        doc.close()
+
+
+def test_la_plantilla_en_blanco_recibe_los_5_campos_del_proyecto(entorno):
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", anotacion=False, firmas=False)
+    r = _llamar(entorno, en_blanco=blanco)
+    assert r["ok"], r
+    assert _valor_en_fila(r["ruta"], "Nombre del proyecto") == "Proyecto Sintetico"
+    assert _valor_en_fila(r["ruta"], "Licencia No.", lado_der=True) == "LIC-SINT"
+    assert _valor_en_fila(r["ruta"], "Sol. Licencia No.", lado_der=True) == "SOL-SINT"
+    assert _valor_en_fila(r["ruta"], "Encargado de obra") == "RESIDENTE SINT"
+    assert _valor_en_fila(r["ruta"], "Dirección") == "CALLE SINTETICA 1"
+    assert r["avisos"] == []
+
+
+def test_un_valor_ya_escrito_no_se_sobrescribe_y_si_difiere_hay_aviso(entorno):
+    previo = {"nombre": "Proyecto Sintetico", "no_licencia": "LIC-VIEJA", "direccion_obra": "OTRA CALLE 9"}
+    base = crear_fi(entorno / "con_datos.pdf", "FI-02", nivel=NIVEL, obs=["x"], cabecera=previo)
+    r = _llamar(entorno, existente=base)
+    assert r["ok"], r
+    assert _valor_en_fila(r["ruta"], "Licencia No.", lado_der=True) == "LIC-VIEJA"  # no se cambió
+    assert _valor_en_fila(r["ruta"], "Dirección") == "OTRA CALLE 9"
+    assert _valor_en_fila(r["ruta"], "Nombre del proyecto") == "Proyecto Sintetico"  # igual: sin aviso
+    assert _valor_en_fila(r["ruta"], "Sol. Licencia No.", lado_der=True) == "SOL-SINT"  # estaba vacío: se escribe
+    avisos = " ".join(r["avisos"])
+    assert "LIC-VIEJA" in avisos and "OTRA CALLE 9" in avisos and "Proyecto Sintetico" not in avisos
+
+
+def test_un_valor_muy_largo_se_reduce_o_no_cabe(entorno):
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02")
+    r = _llamar(entorno, en_blanco=blanco, proyecto={**PROYECTO, "direccion_obra": "CALLE LARGUISIMA " * 3})
+    assert r["ok"] and "LARGUISIMA" in _valor_en_fila(r["ruta"], "Dirección")
+    r2 = _llamar(entorno, en_blanco=blanco, proyecto={**PROYECTO, "direccion_obra": "X" * 400})
+    assert not r2["ok"] and "no cabe" in r2["errores"][0]
+
+
+def test_fila_sin_caja_propia_usa_la_x_de_las_cajas_vecinas_o1(entorno):
+    base = crear_fi(entorno / "sin_caja.pdf", "FI-02", nivel=NIVEL, obs=["x"], sin_caja=("7c",))
+    r = _llamar(entorno, existente=base)
+    assert r["ok"], r
+    marcas = _marcas(r["ruta"])
+    assert len(marcas) == len(FILAS_SI["FI-02"])
+    centros = sorted((m.x0 + m.x1) / 2 for _, m in marcas)
+    assert centros[-1] - centros[0] < 1.0  # todas en la misma columna, incluida la fila sin caja
 
 
 def test_sin_fi_de_partida_es_error(entorno):
@@ -273,7 +364,11 @@ def test_cierre_de_conformidad_solo_en_completivo_sin_discrepancias(entorno, exi
     ({"visita": _visita(clase="Mixta")}, "Parcial o Completivo"),
     ({"nivel_txt": ""}, "nivel_txt"),
     ({"nivel_clave": "pendiente de verificar"}, "nivel_clave"),
-    ({"proyecto": {"nombre": ""}}, "proyecto.nombre"),
+    ({"proyecto": {**PROYECTO, "nombre": ""}}, "proyecto.nombre"),
+    ({"proyecto": {**PROYECTO, "no_licencia": ""}}, "proyecto.no_licencia"),
+    ({"proyecto": {**PROYECTO, "no_solicitud": "pendiente de verificar"}}, "proyecto.no_solicitud"),
+    ({"proyecto": {**PROYECTO, "residente_obra": None}}, "proyecto.residente_obra"),
+    ({"proyecto": {**PROYECTO, "direccion_obra": "  "}}, "proyecto.direccion_obra"),
     ({"elementos": []}, "elementos supervisados"),
     ({"tipo_fi": "FI-09"}, "desconocido"),
 ])
@@ -329,19 +424,25 @@ def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, an
     copia = entorno / "copia.pdf"
     shutil.copyfile(original, copia)
     doc = pymupdf.open(str(copia))
+    cabecera_antes = fi_mived.limpiar_extraido(doc[0].get_text("text", clip=pymupdf.Rect(0, 100, 600, 165)))
     nivel_actual = fi_mived._texto_nivel_existente(doc[0])
     obs_antes = fi_mived.limpiar_extraido(" ".join(p.get_text() for p in doc))
     anotaciones = sum(len(list(p.annots() or [])) for p in doc)
     doc.close()
     assert anotaciones == anotaciones_antes
     if tipo == "FI-01":
-        clave = "FUNDACIONES"  # el nivel que trae este FI-01 en la fila 'Nivel a inspeccionar'
-        assert clave in fi_mived._normalizar_texto(nivel_actual or "")
+        clave = nivel_actual  # este FI-01 no trae número: la clave debe ser el nivel completo
+        assert clave
     r = fi_mived.actualizar_fi(tipo, PROYECTO, _visita(), nivel_actual or "FUNDACIONES", clave,
                                ["ELEMENTO SINTETICO 1", "ELEMENTO SINTETICO 2"], existente=copia, usuario="prueba")
     assert r["ok"], r
     assert _hash(original) == hash_antes  # el original no cambió (ni el de la copia de partida)
     out = pymupdf.open(str(r["ruta"]))
+    # Los datos de cabecera que ya traía el FI no se tocan (ni siquiera con otros datos de proyecto)
+    cabecera_despues = fi_mived.limpiar_extraido(out[0].get_text("text", clip=pymupdf.Rect(0, 100, 600, 165)))
+    for linea in cabecera_antes.splitlines():
+        if linea.strip() and not re.fullmatch(r"[\d\s/]+", linea.strip()):  # la fecha sí se reescribe
+            assert linea.strip() in cabecera_despues, linea
     texto = fi_mived.limpiar_extraido(" ".join(p.get_text() for p in out))
     assert "15/10/2026 - PARCIAL: Se supervisaron ELEMENTO SINTETICO 1, ELEMENTO SINTETICO 2." in " ".join(texto.split())
     assert sum(len(list(p.annots() or [])) for p in out) == 0
@@ -351,3 +452,21 @@ def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, an
         if fragmento in obs_antes:
             assert fragmento in texto
     assert len(_marcas(r["ruta"])) == len(FILAS_SI[tipo])  # el mismo número de marcas que la tabla de T0b
+    assert any("distinto del proyecto" in a for a in r["avisos"])  # el FI real trae otros datos: solo avisos
+
+
+@pytest.mark.parametrize("tipo", ["FI-01", "FI-02", "FI-03"])
+def test_plantilla_en_blanco_real_recibe_los_5_campos_sinteticos(entorno, tipo):
+    blanco = RAIZ_FI.parent.parent / f"{tipo}-26-STP-TERRALIVING.pdf"
+    if not blanco.is_file():
+        pytest.skip("la plantilla en blanco real no está en esta máquina")
+    hash_antes = _hash(blanco)
+    r = fi_mived.actualizar_fi(tipo, PROYECTO, _visita(), "NIVEL SINTETICO -9", "-9", ["ELEMENTO SINTETICO"],
+                               en_blanco=blanco, usuario="prueba")
+    assert r["ok"], r
+    assert _hash(blanco) == hash_antes
+    assert _valor_en_fila(r["ruta"], "Nombre del proyecto") == "Proyecto Sintetico"
+    assert _valor_en_fila(r["ruta"], "Licencia No.", lado_der=True) == "LIC-SINT"
+    assert _valor_en_fila(r["ruta"], "Encargado de obra") == "RESIDENTE SINT"
+    assert _valor_en_fila(r["ruta"], "Dirección") == "CALLE SINTETICA 1"
+    assert len(_marcas(r["ruta"])) == len(FILAS_SI[tipo]) and r["avisos"] == []

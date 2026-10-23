@@ -7,7 +7,8 @@
 # diccionarios. Regla de Oro #1: nada de datos fijos de ningún proyecto; lo que falte => error y no se
 # escribe nada. Nunca se inserta una firma y se borran todas las anotaciones (#16); la mampostería nunca se
 # marca (#17); si ya existe un FI del mismo nivel y tipo se actualiza como versión nueva (#18) y nunca se
-# parte del FI de otro nivel.
+# parte del FI de otro nivel. Las fechas de autorización de visitas anteriores NO se tocan (regla de Steven
+# pendiente): "en blanco" significa solo que no se escribe ninguna fecha nueva.
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -38,6 +39,18 @@ FILAS_SI = {
               "5a", "5c", "5d", "5e", "10a", "10b", "10c", "10d", "10e", "11a", "11b", "11c", "11d"},
 }
 
+# Campos de la cabecera de la hoja 1 (rótulo, clave de proyecto, lado, x del valor). Se localizan por su
+# rótulo. "Encargado de obra" toma el residente (pendiente de que Steven lo confirme). Lado "i": columna de la
+# izquierda (el valor va hasta x=398); lado "d": columna de la derecha (hasta el borde de la hoja).
+X_LIMITE_IZQ = 398.0
+X_LIMITE_DER = 580.0
+CAMPOS_CABECERA = [
+    (re.compile(r"^Nombre del proyecto$"), "nombre", "i", 12.6, None),
+    (re.compile(r"^Licencia No\.$"), "no_licencia", "d", 8.6, None),
+    (re.compile(r"^Sol\.\s*Licencia No\.$"), "no_solicitud", "d", 8.6, None),
+    (re.compile(r"^Encargado de obra$"), "residente_obra", "i", None, 132.2),
+    (re.compile(r"^Dirección$"), "direccion_obra", "i", None, 119.8),
+]
 _RE_ROTULO = re.compile(r"^(\d{1,2}[a-z])\s*\.")
 _RE_SI = re.compile("^S[ií\u0301]$")
 _RE_OBS = re.compile(r"^\d{1,2}\.\s*OBSERVACIONES", re.IGNORECASE)
@@ -103,14 +116,19 @@ def _filas_si(page) -> Dict[str, Dict]:
     return filas
 
 
-def _rect_marca(fila: Dict) -> pymupdf.Rect:
-    """Cuadro de 12x12 pt centrado en la primera caja de la fila (la de 'Sí'); sin caja, a la izquierda del texto."""
+def _rect_marca(fila: Dict, x_cajas: Optional[float] = None) -> pymupdf.Rect:
+    """
+    Cuadro de 12x12 pt centrado en la primera caja de la fila (la de 'Sí'). Una fila sin caja propia (como la 7c
+    del FI-02) toma la x de las cajas vecinas de la misma página; solo si ninguna tiene caja, va a la izquierda
+    del texto.
+    """
     caja = fila["caja"]
     if caja is not None:
         cx, cy = caja.x0 + 4.6, (caja.y0 + caja.y1) / 2
     else:
         si = fila["si"]
-        cx, cy = si.x0 - 15.0, (si.y0 + si.y1) / 2
+        cx = x_cajas + 4.6 if x_cajas is not None else si.x0 - 15.0
+        cy = (si.y0 + si.y1) / 2
     m = LADO_MARCA / 2
     return pymupdf.Rect(cx - m, cy - m, cx + m, cy + m)
 
@@ -153,14 +171,62 @@ def _kw_texto(nombre_fuente, archivo_fuente) -> Dict:
     return kw
 
 
-def _escribir_cabecera(page, nivel_txt: str, fecha: str, nombre_fuente, archivo_fuente) -> Optional[str]:
-    """Nivel y fecha de la primera página. Devuelve un mensaje de error o None."""
+def _ancho(texto: str, tam: float, archivo_fuente) -> float:
+    fuente = pymupdf.Font(fontfile=archivo_fuente) if archivo_fuente else pymupdf.Font("helv")
+    return fuente.text_length(texto, fontsize=tam)
+
+
+def _campos_de_proyecto(page, proyecto: Dict, nombre_fuente, archivo_fuente) -> Tuple[Optional[str], List[str]]:
+    """
+    Escribe nombre del proyecto, licencia, solicitud, encargado y dirección donde el FI los tiene vacíos.
+    Un valor ya escrito NUNCA se sobrescribe; si difiere del del proyecto se deja un aviso.
+    """
+    spans = _spans(page)
+    avisos: List[str] = []
+    for patron, clave, lado, dx, x_abs in CAMPOS_CABECERA:
+        rotulo = next((s for s in spans if patron.match(limpiar_extraido(s["text"]).strip())
+                       and (s["bbox"][0] >= 400 if lado == "d" else s["bbox"][0] < 400)), None)
+        if rotulo is None:
+            return f"El formulario no trae el rótulo del campo '{clave}' en la primera hoja ({PENDIENTE}).", avisos
+        valor = str(proyecto[clave]).strip()
+        centro = (rotulo["bbox"][1] + rotulo["bbox"][3]) / 2
+        x_desde = rotulo["bbox"][2] - 3  # el valor puede quedar pegado al final del rótulo
+        x_hasta = X_LIMITE_DER + 20 if lado == "d" else X_LIMITE_IZQ + 2
+        # Un valor escrito a mano queda unos puntos más arriba que el rótulo: se compara por el centro de la fila
+        previos = [s for s in spans if s["bbox"][0] >= x_desde and s["bbox"][0] < x_hasta
+                   and abs((s["bbox"][1] + s["bbox"][3]) / 2 - centro) < 7 and not patron.match(s["text"].strip())]
+        previo = limpiar_extraido(" ".join(s["text"] for s in previos)).strip()
+        if previo:
+            if _normalizar_texto(previo) != _normalizar_texto(valor):
+                avisos.append(f"El FI ya trae en '{clave}' el valor '{previo}', distinto del proyecto "
+                              f"('{valor}'): no se cambió.")
+            continue
+        x = x_abs if x_abs is not None else rotulo["bbox"][2] + dx
+        limite = X_LIMITE_DER if lado == "d" else X_LIMITE_IZQ
+        tam = TAMANO_OBS
+        while tam > 7.0 and x + _ancho(valor, tam, archivo_fuente) > limite:
+            tam -= 0.25
+        if x + _ancho(valor, tam, archivo_fuente) > limite:
+            return f"El valor de '{clave}' no cabe en el campo del formulario ({PENDIENTE}).", avisos
+        kw = _kw_texto(nombre_fuente, archivo_fuente)
+        kw["fontsize"] = tam
+        page.insert_text((x, rotulo["origin"][1] - 0.3), valor, **kw)
+    return None, avisos
+
+
+def _escribir_cabecera(page, nivel_txt: str, fecha: str, proyecto: Dict, nombre_fuente,
+                       archivo_fuente) -> Tuple[Optional[str], List[str]]:
+    """Datos del proyecto, nivel y fecha de la primera página. Devuelve (mensaje de error o None, avisos)."""
     spans = _spans(page)
     rotulo_nivel = next((s for s in spans if s["text"].strip() == "Nivel a inspeccionar"), None)
     rotulo_fecha = next((s for s in spans if s["text"].strip() == "Fecha" and s["bbox"][0] > 380
                          and s["bbox"][1] < 170), None)
     if rotulo_nivel is None or rotulo_fecha is None:
-        return f"El formulario no trae los rótulos 'Nivel a inspeccionar' y 'Fecha' en la primera hoja ({PENDIENTE})."
+        return (f"El formulario no trae los rótulos 'Nivel a inspeccionar' y 'Fecha' en la primera hoja "
+                f"({PENDIENTE}).", [])
+    error, avisos = _campos_de_proyecto(page, proyecto, nombre_fuente, archivo_fuente)
+    if error:
+        return error, avisos
     n0, n1 = rotulo_nivel["bbox"][1] - 2, rotulo_nivel["bbox"][3] + 2
     viejos = [pymupdf.Rect(s["bbox"]) for s in spans
               if 110 < s["bbox"][0] < 400 and s["bbox"][1] >= n0 and s["bbox"][3] <= n1 + 3]
@@ -171,7 +237,7 @@ def _escribir_cabecera(page, nivel_txt: str, fecha: str, nombre_fuente, archivo_
     kw = _kw_texto(nombre_fuente, archivo_fuente)
     page.insert_text((X_NIVEL, rotulo_nivel["origin"][1] - 0.1), nivel_txt, **kw)
     page.insert_text((X_FECHA, rotulo_fecha["origin"][1] + 0.6), fecha, **kw)
-    return None
+    return None, avisos
 
 
 def _envolver(texto: str, ancho: float, tam: float, fuente: pymupdf.Font) -> List[str]:
@@ -213,28 +279,19 @@ def _agregar_observaciones(doc, tipo_fi: str, lineas_nuevas: List[str], nombre_f
     return f"El formulario no trae la sección OBSERVACIONES ({PENDIENTE})."
 
 
-def _blanquear_fechas_autorizacion(doc):
-    """Fechas de autorización de vaciado en blanco hasta que Steven confirme la regla (T0b, parte 2)."""
-    for page in doc:
-        spans = _spans(page)
-        firmas = next((s for s in spans if _RE_FIRMAS.match(s["text"].strip())), None)
-        if firmas is None:
-            continue
-        borrar = [pymupdf.Rect(s["bbox"]) for s in spans if s["bbox"][1] > firmas["bbox"][3]
-                  and s["bbox"][0] >= 460 and re.fullmatch(r"\d{2}|\d{4}", s["text"].strip())]
-        _redactar(page, borrar)
-
-
 def _marcar_si(doc, tipo_fi: str) -> Tuple[int, List[str]]:
     """Dibuja la marca 'Sí' (X de 12x12 pt) en las filas de FILAS_SI. Devuelve (marcas, filas no halladas)."""
     pendientes = set(FILAS_SI[tipo_fi])
     dibujadas = 0
     for page in doc:
-        for codigo, fila in _filas_si(page).items():
+        filas = _filas_si(page)
+        xs = sorted(f["caja"].x0 for f in filas.values() if f["caja"] is not None)
+        x_cajas = xs[len(xs) // 2] if xs else None  # mediana de las cajas de la hoja
+        for codigo, fila in filas.items():
             if codigo not in FILAS_SI[tipo_fi]:
                 continue
             pendientes.discard(codigo)
-            r = _rect_marca(fila)
+            r = _rect_marca(fila, x_cajas)
             if _ya_marcada(page, r):
                 continue
             forma = page.new_shape()  # un solo trazo de 2 líneas, como las marcas de los FI de ejemplo
@@ -257,6 +314,22 @@ def _borrar_anotaciones(doc) -> int:
 
 # ---------- API ----------
 
+def _clave_en_nivel(clave: str, nivel_existente: str) -> Optional[str]:
+    """
+    Comprueba que `clave` identifique el nivel del FI existente, con límites de palabra (SOTANO -3 no encaja en
+    SOTANO -30). Una clave sin número solo vale si es el nivel completo. Devuelve un mensaje de error o None.
+    """
+    c, n = _normalizar_texto(clave), _normalizar_texto(nivel_existente)
+    if not re.search(r"\d", c):
+        if c == n:
+            return None
+        return (f"La clave de nivel '{clave}' es genérica (no tiene número) y no es el nivel completo del FI "
+                f"existente ('{nivel_existente}'): {PENDIENTE}.")
+    if re.search(r"(?<![0-9A-Z])" + re.escape(c) + r"(?![0-9A-Z])", n):
+        return None
+    return f"El FI existente es de otro nivel ('{nivel_existente}', se esperaba '{clave}'): no se actualiza el FI de otro nivel (#18)."
+
+
 def nombre_archivo(proyecto: Dict, nivel_txt: str) -> str:
     """§5.2: MIVED - <PROYECTO>-<ELEMENTOS NIVEL>.PDF"""
     return f"MIVED - {proyecto['nombre'].upper()}-{nivel_txt.upper()}.PDF"
@@ -271,13 +344,18 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
       en_blanco: el FI en blanco del proyecto, solo si no existe uno. Nunca se parte del FI de otro nivel.
     - nivel_txt: texto de 'Nivel a inspeccionar'; nivel_clave: parte que identifica el nivel (p. ej. 'SOTANO -3'),
       que debe aparecer en el FI existente.
+    - proyecto: nombre, no_licencia, no_solicitud, residente_obra ("Encargado de obra", pendiente de confirmar) y
+      direccion_obra; se escriben solo donde el FI los tiene vacíos y nunca se sobrescribe un valor existente.
     - elementos: nombres de lo supervisado en la visita (se agregan a Observaciones).
     - visita: fecha (DD/MM/AAAA), clase (Parcial/Completivo) y, opcional, discrepancias_abiertas.
     """
     res = {"ok": False, "ruta": None, "errores": [], "avisos": [], "marcas": 0}
     if tipo_fi not in TIPOS_FI:
         return _error(res, f"Tipo de formulario '{tipo_fi}' desconocido; usa FI-01, FI-02 o FI-03.")
-    for etiqueta, valor in (("proyecto.nombre", proyecto.get("nombre")), ("nivel_txt", nivel_txt),
+    for campo in ("nombre", "no_licencia", "no_solicitud", "residente_obra", "direccion_obra"):
+        if _vacio(proyecto.get(campo)):
+            res["errores"].append(f"Falta 'proyecto.{campo}' para la cabecera del formulario: {PENDIENTE}.")
+    for etiqueta, valor in (("nivel_txt", nivel_txt),
                             ("nivel_clave", nivel_clave), ("visita.fecha", visita.get("fecha")),
                             ("visita.clase", visita.get("clase"))):
         if _vacio(valor):
@@ -303,13 +381,14 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
             actual = _texto_nivel_existente(doc[0])
             if actual is None:
                 return _error(res, f"El FI existente no tiene el rótulo 'Nivel a inspeccionar' ({PENDIENTE}).")
-            if _normalizar_texto(nivel_clave) not in _normalizar_texto(actual):
-                return _error(res, f"El FI existente es de otro nivel ('{actual}', se esperaba '{nivel_clave}'): "
-                                   "no se actualiza el FI de otro nivel (#18).")
+            err = _clave_en_nivel(nivel_clave, actual)
+            if err:
+                return _error(res, err)
         nombre_fuente, archivo_fuente = _fuente()
         if archivo_fuente is None:
             res["avisos"].append("Calibri no está instalada en esta máquina: se usó la fuente base del PDF.")
-        err = _escribir_cabecera(doc[0], nivel_txt, fecha, nombre_fuente, archivo_fuente)
+        err, avisos = _escribir_cabecera(doc[0], nivel_txt, fecha, proyecto, nombre_fuente, archivo_fuente)
+        res["avisos"].extend(avisos)
         if err:
             return _error(res, err)
         lineas = [f"{fecha} - {clase.upper()}: Se supervisaron {', '.join(elementos)}."]
@@ -318,7 +397,6 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
         err = _agregar_observaciones(doc, tipo_fi, lineas, nombre_fuente, archivo_fuente)
         if err:
             return _error(res, err)
-        _blanquear_fechas_autorizacion(doc)
         marcas, no_halladas = _marcar_si(doc, tipo_fi)
         if no_halladas:
             return _error(res, f"No se hallaron en el formulario las filas {', '.join(no_halladas)} "
