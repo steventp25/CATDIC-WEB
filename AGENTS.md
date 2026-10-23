@@ -146,7 +146,7 @@ Ya existen y están corriendo en la PC de Steven:
 
 &#x20;  - \*\*Ejes con prima:\*\* existen ejes como `A'` (y números como `2'`); se escriben tal cual (ej. `EJE A'-1`), con comilla recta `'`.
 
-&#x20;  - \*\*Ejes escritos en la visita:\*\* si el elemento en la visita dice solo `A1` o `1A`, significa que está en el cruce de los ejes `A` y `1` (el orden letra/número suele venir cruzado) → `EJE A-1`. Lo que no se pueda leer así sin adivinar queda `"pendiente de verificar"`.
+&#x20;  - \*\*Ejes escritos en la visita:\*\* una etiqueta de visita con un solo token letra+número (`A1`, `1A`, `L5`, `C1`) NO se interpreta: puede ser un cruce de ejes o el ID del elemento (p. ej. `L5` = losa 5), así que ID y EJES quedan `"pendiente de verificar"` y van a la Mesa de Dudas (decisión de Steven, 23/10/2026). El cruce solo se lee cuando la etiqueta trae un ID seguido del cruce (`C1 A4` → ID `C1`, `EJE A-4`; el orden letra/número puede venir cruzado: `C1 4A` → `EJE A-4`). Antes de interpretar se normaliza la prima tipográfica `’` a `'` y se pasa a mayúsculas; la etiqueta original se conserva literal. Lo que no se pueda leer así sin adivinar queda `"pendiente de verificar"`.
 
 5\. \*\*Física de Obra y Recubrimientos:\*\*
 

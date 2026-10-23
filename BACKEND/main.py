@@ -1,18 +1,23 @@
 # backend/main.py
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
 import getpass
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
+RUTA_FRONTEND = Path(__file__).resolve().parent.parent / "FRONTEND"
+
 app = FastAPI(title="CATDIC Web API", version="2.0.0")
 
-# Permitir conexiones locales desde el frontend
+# Permitir conexiones locales desde el frontend abierto directamente durante la transición.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,10 +26,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.on_event("startup")
 def startup_event():
     inicializar_bd()
     sembrar_datos_iniciales_catdic()
+
 
 # --- MODELOS PYDANTIC ---
 class ProyectoUpdate(BaseModel):
@@ -45,29 +52,23 @@ class ProyectoUpdate(BaseModel):
     provincia: Optional[str] = None
     sector: Optional[str] = None
 
-# --- ENDPOINTS API ---
 
+# --- ENDPOINTS API ---
 @app.get("/api/dashboard")
 def obtener_dashboard():
     conn = get_connection()
-    
-    # 1. Proyectos activos
+
     proyectos = [dict(row) for row in conn.execute("SELECT * FROM proyectos").fetchall()]
-    
-    # 2. Cola de visitas
     visitas = [dict(row) for row in conn.execute("SELECT * FROM visitas ORDER BY fecha_visita ASC").fetchall()]
-    
-    # 3. Órdenes de trabajo (Kanban)
     ot = [dict(row) for row in conn.execute("SELECT * FROM ordenes_trabajo").fetchall()]
-    
-    # 4. Estadísticas de resumen
+
     total_proyectos = len(proyectos)
     ordenes_abiertas = len([o for o in ot if o["estado"] != "Entregada"])
     visitas_cola = len([v for v in visitas if v["estado"] in ("Sin procesar", "En cola")])
     visitas_dudas = len([v for v in visitas if v["estado"] == "Con dudas"])
 
     conn.close()
-    
+
     return {
         "stats": {
             "proyectos_activos": total_proyectos,
@@ -75,12 +76,13 @@ def obtener_dashboard():
             "bloqueadas": 0,
             "vencen_7_dias": 0,
             "visitas_en_cola": visitas_cola,
-            "visitas_con_dudas": visitas_dudas
+            "visitas_con_dudas": visitas_dudas,
         },
         "proyectos": proyectos,
         "visitas": visitas,
-        "ordenes": ot
+        "ordenes": ot,
     }
+
 
 @app.patch("/api/proyectos/{proyecto_id}")
 def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
@@ -118,6 +120,7 @@ def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
 
     return {"status": "ok", "mensaje": "Proyecto actualizado correctamente."}
 
+
 @app.post("/api/dropbox/sync")
 def sincronizar_dropbox(proyecto_id: Optional[str] = None):
     """Lee Dropbox (solo lectura) y sincroniza la cola de visitas (Etapa 1 · T5)."""
@@ -126,11 +129,18 @@ def sincronizar_dropbox(proyecto_id: Optional[str] = None):
     except ProyectoNoEncontrado:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
 
+
 MENSAJE_PROCESAR_COLA_DESACTIVADO = (
     "Procesar Cola se habilita en la Etapa 3 (generadores). No se cambió ninguna visita."
 )
+
 
 @app.post("/api/visitas/procesar-cola")
 def procesar_cola():
     """Desactivado (Etapa 1 · T9): se conectará a los generadores en la Etapa 3. No toca la BD."""
     raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
+
+
+# Se monta al final para que /api/* conserve prioridad. Un solo servidor local entrega
+# la interfaz y la API en http://localhost:8000.
+app.mount("/", StaticFiles(directory=RUTA_FRONTEND, html=True), name="frontend")
