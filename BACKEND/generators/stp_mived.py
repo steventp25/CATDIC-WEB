@@ -332,21 +332,32 @@ def _inspeccion(proy, visita, texto_obs) -> str:
             f'<tr><td>NOMBRE Y COLEGIATURA DEL RESIDENTE DE OBRA :</td><td>{_esc(proy["residente_obra"])}</td></tr>'
             f'<tr><td>SUPERVISOR :</td><td>{_esc(proy.get("supervisor") or "")}</td></tr></table>'
             '<p style="text-align:center;font-weight:bold;text-decoration:underline;font-size:8pt;margin-top:34px">OBSERVACIONES DURANTE LA INSPECCION</p>'
-            f'<div style="border:1px solid #000;height:4.6in;padding:18px 14px;font-size:8pt">{_esc(texto_obs)}</div>'
+            f'<div style="border:1px solid #000;height:4.6in;padding:18px 14px;font-size:8pt;white-space:pre-line">{_esc(texto_obs)}</div>'
             '<p style="font-weight:bold;font-size:8pt;margin-top:12px">NOMBRE Y FIRMAS DE LOS INSPECTORES:</p></div>')
 
 
-def _texto_observaciones(visita: Dict, discrepancias: List[str], pendientes: int = 0) -> str:
+def _texto_observaciones(visita: Dict, discrepancias: List[str], pendientes: int = 0,
+                         excluidos: Optional[List[str]] = None) -> str:
     """
-    La conformidad solo va si no hay discrepancias abiertas NI datos de OBRA pendientes (celdas vacías por
-    falta de medida o de dato de la visita, o elementos excluidos). Sin texto fijo de otro proyecto.
+    La conformidad solo va si no hay discrepancias abiertas, NI datos de OBRA pendientes (celdas o medidas
+    vacías), NI elementos excluidos del documento. Sin texto fijo de otro proyecto. Los dos conteos van
+    separados y los elementos no incluidos se nombran en una línea aparte.
     """
+    excluidos = excluidos or []
     base = f"SE VERIFICO EL ARMADO DE LOS ELEMENTOS {visita['elementos_txt']} - {visita['clase'].upper()}"
     if discrepancias:
-        return base + ". DISCREPANCIAS ABIERTAS: " + " | ".join(discrepancias)
-    if pendientes:
-        return base + f". DATOS DE OBRA PENDIENTES DE VERIFICAR: {pendientes}."
-    return base + ", ACORDE A PLANOS APROBADOS."
+        texto = base + ". DISCREPANCIAS ABIERTAS: " + " | ".join(discrepancias)
+    elif pendientes or excluidos:
+        texto = base + "."
+        if pendientes:
+            texto += f" CELDAS O MEDIDAS DE OBRA PENDIENTES DE VERIFICAR: {pendientes}."
+    else:
+        texto = base + ", ACORDE A PLANOS APROBADOS."
+    if pendientes and discrepancias:
+        texto += f"\nCELDAS O MEDIDAS DE OBRA PENDIENTES DE VERIFICAR: {pendientes}."
+    if excluidos:
+        texto += ("\nELEMENTOS NO INCLUIDOS EN ESTE INFORME (pendientes de verificar): " + ", ".join(excluidos))
+    return texto
 
 
 def _imagen_foto_obra(fotos_prep: List[Image.Image]) -> Image.Image:
@@ -430,10 +441,11 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
     if not armadas:
         resultado["errores"].append(f"Ningún elemento de la visita se puede generar en STP-MIVED ({PENDIENTE}).")
         return resultado
-    pendientes = sum(1 for d in dudas if d.get("bloquea") is False)  # celdas de OBRA vacías o elementos excluidos
+    # Celdas o medidas de OBRA vacías (los elementos excluidos se cuentan aparte y se nombran en la hoja)
+    pendientes = sum(1 for d in dudas if d.get("bloquea") is False and not d.get("excluido"))
 
     # Imágenes (M1, M3, M4 de T6) y páginas
-    paginas, num = [_portada(proyecto, visita), _inspeccion(proyecto, visita, _texto_observaciones(visita, discrepancias, pendientes))], 1
+    paginas, num = [_portada(proyecto, visita), _inspeccion(proyecto, visita, _texto_observaciones(visita, discrepancias, pendientes, resultado["excluidos"]))], 1
     carpeta_planos = proyecto["carpeta_planos"]
     try:
         for ficha, kind, filas in armadas:

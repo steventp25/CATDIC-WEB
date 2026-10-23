@@ -346,7 +346,7 @@ def test_b3_la_conformidad_exige_cero_datos_de_obra_pendientes(mundo, entorno):
     ficha["medidas"]["d"]["medida_acero_campo_m"] = None
     r = _generar(mundo, entorno, [ficha])
     insp = _textos(r["ruta"])[1]
-    assert "ACORDE A PLANOS APROBADOS" not in insp and "PENDIENTES DE VERIFICAR: 2" in insp
+    assert "ACORDE A PLANOS APROBADOS" not in insp and "CELDAS O MEDIDAS DE OBRA PENDIENTES DE VERIFICAR: 2" in " ".join(insp.split())
     # una fila de OBRA sin dato tampoco permite la conformidad
     ficha2 = mundo.ficha_viga()
     del ficha2["obra"]["i"]
@@ -409,8 +409,11 @@ def test_o6_zapata_y_platea_se_excluyen_con_duda_y_el_resto_se_genera(mundo, ent
     assert len(_textos(r["ruta"])) == 2 + 2  # portada, inspección y la viga
     excluidas = [d for d in r["dudas"] if d.get("excluido")]
     assert len(excluidas) == 2 and all(d["bloquea"] is False for d in excluidas)
-    # Un elemento excluido es una dato pendiente: no hay conformidad
-    assert "ACORDE A PLANOS APROBADOS" not in _textos(r["ruta"])[1]
+    # Un elemento excluido no desaparece en silencio: la hoja de inspección lo nombra, y no hay conformidad
+    insp = " ".join(_textos(r["ruta"])[1].split())
+    assert "ELEMENTOS NO INCLUIDOS EN ESTE INFORME (pendientes de verificar): ZAPATA-Z1, PLATEA-P1" in insp
+    assert "ACORDE A PLANOS APROBADOS" not in insp
+    assert "CELDAS O MEDIDAS DE OBRA PENDIENTES" not in insp  # el conteo de celdas va aparte (aquí hay 0)
 
 
 def test_o6_si_todo_queda_excluido_no_genera(mundo, entorno):
@@ -418,3 +421,16 @@ def test_o6_si_todo_queda_excluido_no_genera(mundo, entorno):
     r = _generar(mundo, entorno, [zapata])
     assert not r["ok"] and r["ruta"] is None and r["excluidos"] == ["ZAPATA-Z1"]
     assert "Ningún elemento" in r["errores"][0]
+
+
+def test_una_viga_y_una_zapata_la_hoja_de_inspeccion_nombra_la_zapata_y_separa_los_conteos(mundo, entorno):
+    zapata = mundo.ficha_losa(titulo="ZAPATA-Z1", tipo_elemento="ZAPATA AISLADA", ejes="EJE F-11")
+    viga = mundo.ficha_viga()
+    viga["medidas"]["c"]["medida_acero_campo_m"] = None  # una celda de OBRA pendiente
+    r = _generar(mundo, entorno, [viga, zapata])
+    assert r["ok"] and r["excluidos"] == ["ZAPATA-Z1"]
+    insp = " ".join(_textos(r["ruta"])[1].split())
+    assert "ELEMENTOS NO INCLUIDOS EN ESTE INFORME (pendientes de verificar): ZAPATA-Z1" in insp
+    assert "CELDAS O MEDIDAS DE OBRA PENDIENTES DE VERIFICAR: 1" in insp  # solo la celda; la zapata no se mezcla
+    assert "ACORDE A PLANOS APROBADOS" not in insp
+    assert len(_textos(r["ruta"])) == 4  # la zapata no tiene hojas: solo se nombra en la inspección
