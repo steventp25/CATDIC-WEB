@@ -155,7 +155,7 @@ def _redactar(page, rects: List[pymupdf.Rect]):
         r = pymupdf.Rect(r)
         r.y0 += 1.5
         r.y1 -= 1.5
-        page.add_redact_annot(r, fill=(1, 1, 1))
+        page.add_redact_annot(r, fill=False)  # solo quita el texto: un relleno blanco cortaría las rayas de la tabla
     if rects:
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
 
@@ -265,7 +265,7 @@ def _agregar_observaciones(doc, tipo_fi: str, lineas_nuevas: List[str], nombre_f
                           archivo_fuente) -> Tuple[Optional[str], List[str]]:
     """
     Agrega las líneas debajo de las observaciones existentes. Si el FI trae un cierre anterior ("Todo segun ..."),
-    se tapa con redacción blanca y se vuelve a escribir igual DESPUÉS de la observación nueva (respuesta de
+    se quita (redacción sin relleno) y se vuelve a escribir igual DESPUÉS de la observación nueva (respuesta de
     Steven). Devuelve (mensaje de error o None, textos del cierre que se movieron).
     """
     for page in doc:
@@ -278,7 +278,7 @@ def _agregar_observaciones(doc, tipo_fi: str, lineas_nuevas: List[str], nombre_f
         existentes = sorted((s for s in spans if s["bbox"][1] > cab["bbox"][3] and s["bbox"][3] < limite),
                             key=lambda s: (s["origin"][1], s["bbox"][0]))
         inicio_cierre = next((i for i, s in enumerate(existentes)
-                              if _normalizar_texto(s["text"]).startswith("TODO SEGUN")), None)
+                              if _normalizar_texto(s["text"]).startswith(INICIOS_DE_CIERRE)), None)
         cierre = existentes[inicio_cierre:] if inicio_cierre is not None else []
         previas = existentes[:inicio_cierre] if inicio_cierre is not None else existentes
         base = (max(s["origin"][1] for s in previas) + INTERLINEADO) if previas else cab["bbox"][3] + 15.0
@@ -313,6 +313,7 @@ _RE_SEP = re.compile(r"^/\s*$")
 _RE_NUM = re.compile(r"^(\d{2}|\d{4})$")
 _RE_FECHA_COMPLETA = re.compile(r"^\d{2}/\d{2}/\d{4}$")  # fecha escrita de una sola vez, como en algunos FI llenados
 _PLACEHOLDER = {"dd", "mm", "aaaa"}
+INICIOS_DE_CIERRE = ("TODO SEGUN", "CONFORME A PLANOS APROBADOS")  # textos con los que una visita anterior cerró
 LIMITE_INFERIOR = 36.0           # margen inferior de la hoja: una fila nueva no puede pasar de aquí (el pie impreso)
 Y_SUPERIOR_HOJA_SIGUIENTE = 90.0  # arranque de la tabla cuando la fila nueva va en la hoja siguiente
 
@@ -372,6 +373,49 @@ def _estilo_fecha(fila: Dict) -> Optional[Dict]:
     return None
 
 
+def _escribir_estilo_fecha(page, estilo: Dict, fecha: str, y: float, kw: Dict):
+    if "completa" in estilo:
+        page.insert_text((estilo["completa"], y), fecha, **kw)
+        return
+    for x, texto in zip(estilo["partes"], fecha.split("/")):
+        page.insert_text((x, y), texto, **kw)
+    for x in estilo["barras"]:
+        page.insert_text((x, y), "/", **kw)
+
+
+def _usar_fila_vacia_del_bloque(doc, fecha: str, nombre_fuente, archivo_fuente) -> Optional[str]:
+    """
+    Recomendación del Auditor (a confirmar por Steven): en el FI-01 y el FI-03 el bloque "Inspectores" trae filas
+    previstas para más inspectores, vacías y sin 'dd / mm / aaaa' impreso. Se usa la PRIMERA fila sin texto que
+    queda entre dos rayas de la tabla de firmas, debajo de la última fecha, y se escribe la fecha en las mismas x
+    de la fila anterior. Devuelve el aviso, o None si no hay tal fila (entonces se agrega una fila nueva).
+    """
+    filas = _filas_autorizacion(doc)
+    ultima = filas[-1] if filas else None
+    estilo = _estilo_fecha(ultima) if ultima else None
+    if estilo is None:
+        return None
+    page, base = doc[ultima["pagina"]], ultima["y"]
+    rayas = []
+    for r in sorted((r for r in _rects_de_dibujo(page) if r.width > 300 and r.height <= 2.5 and r.y0 > base),
+                    key=lambda r: r.y0):
+        rayas.append(r)
+        if r.width >= 540:   # el borde inferior de la tabla: de ahí no se sale
+            break
+    if len(rayas) < 2:
+        return None
+    desplazamiento = rayas[0].y0 - base
+    textos = _spans(page)
+    for arriba, abajo in zip(rayas, rayas[1:]):
+        if abajo.y0 - arriba.y1 < 8:
+            continue
+        if any(arriba.y1 <= (sp["bbox"][1] + sp["bbox"][3]) / 2 <= abajo.y0 and sp["bbox"][0] > 150 for sp in textos):
+            continue
+        _escribir_estilo_fecha(page, estilo, fecha, abajo.y0 - desplazamiento, _kw_texto(nombre_fuente, archivo_fuente))
+        return f"Se usó la primera fila vacía del bloque de inspectores para la fecha {fecha}."
+    return None
+
+
 def _agregar_fila_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente) -> Tuple[Optional[str], Optional[str]]:
     """
     Sin fila libre: agrega UNA fila debajo de la última de NOMBRES Y FIRMAS, con la misma altura, las mismas líneas
@@ -424,14 +468,7 @@ def _agregar_fila_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente) -
                                        nuevo_fondo + espesor), color=None, fill=(0, 0, 0))
     destino.draw_rect(pymupdf.Rect(fondo.x0, nuevo_fondo, fondo.x1, nuevo_fondo + espesor), color=None, fill=(0, 0, 0))
     y = nuevo_fondo - desplazamiento
-    kw = _kw_texto(nombre_fuente, archivo_fuente)
-    if "completa" in estilo:
-        destino.insert_text((estilo["completa"], y), fecha, **kw)
-    else:
-        for x, texto in zip(estilo["partes"], fecha.split("/")):
-            destino.insert_text((x, y), texto, **kw)
-        for x in estilo["barras"]:
-            destino.insert_text((x, y), "/", **kw)
+    _escribir_estilo_fecha(destino, estilo, fecha, y, _kw_texto(nombre_fuente, archivo_fuente))
     donde = "en la hoja siguiente" if destino is not page else "debajo de la última"
     return None, f"No había fila libre de autorización: se agregó una fila nueva {donde} con la fecha {fecha}."
 
@@ -443,6 +480,9 @@ def _escribir_fecha_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente)
     """
     libre = next((f for f in _filas_autorizacion(doc) if f["libre"]), None)
     if libre is None:
+        aviso = _usar_fila_vacia_del_bloque(doc, fecha, nombre_fuente, archivo_fuente)
+        if aviso:
+            return None, aviso
         return _agregar_fila_autorizacion(doc, fecha, nombre_fuente, archivo_fuente)
     page = doc[libre["pagina"]]
     dia, mes, anio = fecha.split("/")
@@ -600,7 +640,7 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
             return _error(res, err)
         if aviso:
             res["avisos"].append(aviso)
-            res["fila_agregada"] = True
+            res["fila_agregada"] = "fila nueva" in aviso
         extra = _filas_condicionales(tipo_fi, elementos)
         if extra:
             res["avisos"].append(f"La visita trae dinteles/cerramiento: se marcan también las filas {', '.join(sorted(extra))}.")
