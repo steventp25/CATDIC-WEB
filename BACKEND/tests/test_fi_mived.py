@@ -448,8 +448,8 @@ def _rayas_de_observaciones(ruta: Path):
         doc.close()
 
 
-@pytest.mark.parametrize("cierre", ["Todo segun los planos estructurales.", "CONFORME A PLANOS APROBADOS"])
-def test_mover_el_cierre_no_corta_ninguna_raya_y_el_conforme_anterior_tambien_se_mueve(entorno, cierre):
+@pytest.mark.parametrize("cierre", ["Todo segun los planos estructurales."])
+def test_mover_el_cierre_no_corta_ninguna_raya(entorno, cierre):
     base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, rayas_obs=True,
                     obs=["Observacion anterior UNO.", "Observacion anterior DOS.", "", cierre])
     rayas_antes = _rayas_de_observaciones(base)
@@ -462,6 +462,45 @@ def test_mover_el_cierre_no_corta_ninguna_raya_y_el_conforme_anterior_tambien_se
     doc = pymupdf.open(str(r["ruta"]))  # y ningún relleno blanco quedó en la página
     assert not [d for p in doc for d in p.get_drawings() if d.get("fill") == (1.0, 1.0, 1.0)]
     doc.close()
+
+
+def _lineas_de_texto(ruta: Path):
+    texto = fi_mived.limpiar_extraido(chr(10).join(p.get_text() for p in pymupdf.open(str(ruta))))
+    return [" ".join(l.split()) for l in texto.splitlines() if l.strip()]
+
+
+def _encadenar(entorno, visitas):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["Observacion anterior.", "",
+                                                                   "Todo segun los planos estructurales."],
+                    fechas_aut=("llena", "libre", "libre"))
+    actual = base
+    for v in visitas:
+        r = _llamar(entorno, existente=actual, visita=_visita(**v))
+        assert r["ok"], r
+        actual = r["ruta"]
+    return _lineas_de_texto(actual)
+
+
+def test_completivo_y_luego_parcial_el_conforme_no_se_mueve_al_final(entorno):
+    lineas = _encadenar(entorno, [{"fecha": "15/10/2026", "clase": "Completivo"},
+                                  {"fecha": "20/10/2026", "clase": "Parcial"}])
+    i_comp = next(i for i, l in enumerate(lineas) if "15/10/2026 - COMPLETIVO" in l)
+    i_parc = next(i for i, l in enumerate(lineas) if "20/10/2026 - PARCIAL" in l)
+    i_todo = next(i for i, l in enumerate(lineas) if l.startswith("Todo segun"))
+    assert lineas[i_comp + 1] == "CONFORME A PLANOS APROBADOS"          # el CONFORME queda junto a su visita
+    assert i_comp < i_parc < i_todo and i_todo == i_parc + 1  # la Parcial queda justo antes del cierre general
+    assert lineas.count("CONFORME A PLANOS APROBADOS") == 1              # y la Parcial no queda declarada conforme
+    assert "CONFORME A PLANOS APROBADOS" not in lineas[i_parc:]
+
+
+def test_dos_completivos_tienen_un_conforme_por_visita_sin_duplicados(entorno):
+    lineas = _encadenar(entorno, [{"fecha": "15/10/2026", "clase": "Completivo"},
+                                  {"fecha": "20/10/2026", "clase": "Completivo"}])
+    assert lineas.count("CONFORME A PLANOS APROBADOS") == 2
+    for fecha in ("15/10/2026", "20/10/2026"):
+        i = next(i for i, l in enumerate(lineas) if f"{fecha} - COMPLETIVO" in l)
+        assert lineas[i + 1] == "CONFORME A PLANOS APROBADOS"
+    assert [l for l in lineas if l.startswith("Todo segun")] == ["Todo segun los planos estructurales."]
 
 
 def test_el_cierre_anterior_queda_al_final_con_el_mismo_texto(entorno):

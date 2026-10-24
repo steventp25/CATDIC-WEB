@@ -313,7 +313,7 @@ _RE_SEP = re.compile(r"^/\s*$")
 _RE_NUM = re.compile(r"^(\d{2}|\d{4})$")
 _RE_FECHA_COMPLETA = re.compile(r"^\d{2}/\d{2}/\d{4}$")  # fecha escrita de una sola vez, como en algunos FI llenados
 _PLACEHOLDER = {"dd", "mm", "aaaa"}
-INICIOS_DE_CIERRE = ("TODO SEGUN", "CONFORME A PLANOS APROBADOS")  # textos con los que una visita anterior cerró
+INICIOS_DE_CIERRE = ("TODO SEGUN",)  # cierre general; el CONFORME es de SU visita y se queda junto a ella (§3.2)
 LIMITE_INFERIOR = 36.0           # margen inferior de la hoja: una fila nueva no puede pasar de aquí (el pie impreso)
 Y_SUPERIOR_HOJA_SIGUIENTE = 90.0  # arranque de la tabla cuando la fila nueva va en la hoja siguiente
 
