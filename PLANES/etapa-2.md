@@ -1,5 +1,10 @@
 # Etapa 2 — Importador de datos de diseño (`elementos_diseno`)
-Estado: APROBADO (Steven, 22/10/2026). Respuestas a P1–P5: pendientes.
+Estado: APROBADO (Steven, 22/10/2026). Respuestas a P1–P4: pendientes. P5: resuelta (`.codex/` y `AGENTS.md` ya están versionados en `main`, `a4f9b57`).
+
+### Respuestas de Steven
+- 22/10/2026: "Sí, manda T1 y T2 de la Etapa 2 al Ejecutor. Las hace Claude Code." → T1 y T2: Agente Claude Code.
+- 22/10/2026, tras la Evaluación 1: T2 → "Sí, push y PR". T1, criterio 2 (BD real) → "Verificar al fusionar": se abre el PR con ese criterio pendiente; después de la fusión y del primer arranque se comprueban el respaldo, la fila `MIGRACION_ELEMENTOS_DISENO`, las 15 columnas y `/api/dashboard` 200.
+- 22/10/2026, en la sesión del Ejecutor (antes de "Verificar al fusionar"): "Autorizo migrar la BD real catdic_local.db con respaldo previo, usando la rama claude/etapa2-t1-esquema, y verificar /api/dashboard." → la BD real se migró a las 09:54 y el Auditor lo reverificó (Evaluación 2).
 
 ## Objetivo
 Cargar en `elementos_diseno` (Capa 1, §4.1) los datos de planos **ya documentados** de Terra Living (S5, S4, S3: columnas, muros, pórticos, losas) y de Torre P16 (Losa E-9), con un importador que:
@@ -53,6 +58,8 @@ Se puede repetir sin duplicar y queda registrado en `auditoria`. **Ningún valor
 
 ### T1 — Esquema de `elementos_diseno` y trazabilidad
 - Ejecutor: ejecutor-backend
+- Agente: Claude Code
+- Estado: APROBADA · rama `claude/etapa2-t1-esquema` · a1891ff (Evaluación 2, 22/10/2026) · PR #4 abierto. Historial: 486 pruebas en verde. El Auditor considera seguro el código para la BD real (etapa-2-evaluacion.md, Evaluación 1). 22/10 09:54: el Ejecutor migró la BD real y dice que Steven lo autorizó. Respaldo `catdic_local.backup-20261022-095419.db`, auditoría id 26, 15 columnas (lo comprobó el planificador en solo lectura). Pendiente: que el Auditor lo reverifique.
 - Archivos: `BACKEND/database.py`, `BACKEND/tests/test_database.py`
 - Depende de: —
 - Qué hacer:
@@ -71,6 +78,8 @@ Se puede repetir sin duplicar y queda registrado en `auditoria`. **Ningún valor
 
 ### T2 — Validador de elementos de diseño (contrato del importador)
 - Ejecutor: ejecutor-backend
+- Agente: Claude Code
+- Estado: APROBADA · rama `claude/etapa2-t2-validador` · ceca410 · PR #3 abierto. 520 pruebas en verde (38 nuevas). Observaciones no bloqueantes y condiciones para T4 en etapa-2-evaluacion.md (Evaluación 1).
 - Archivos: `BACKEND/importadores/__init__.py`, `BACKEND/importadores/validador_diseno.py`, `BACKEND/tests/test_validador_diseno.py` (todos nuevos)
 - Depende de: —
 - Qué hacer:
