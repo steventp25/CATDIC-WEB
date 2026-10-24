@@ -313,6 +313,8 @@ _RE_SEP = re.compile(r"^/\s*$")
 _RE_NUM = re.compile(r"^(\d{2}|\d{4})$")
 _RE_FECHA_COMPLETA = re.compile(r"^\d{2}/\d{2}/\d{4}$")  # fecha escrita de una sola vez, como en algunos FI llenados
 _PLACEHOLDER = {"dd", "mm", "aaaa"}
+LIMITE_INFERIOR = 36.0           # margen inferior de la hoja: una fila nueva no puede pasar de aquí (el pie impreso)
+Y_SUPERIOR_HOJA_SIGUIENTE = 90.0  # arranque de la tabla cuando la fila nueva va en la hoja siguiente
 
 
 def _filas_autorizacion(doc) -> List[Dict]:
@@ -350,19 +352,98 @@ def _filas_autorizacion(doc) -> List[Dict]:
             if len(barras) < 2 and not marcadores and not llena:
                 continue  # no es una fila de fecha
             filas.append({"pagina": page.number, "barras": barras[:2], "y": grupo[0]["origin"][1],
-                          "marcadores": marcadores, "libre": not llena})
+                          "marcadores": marcadores, "libre": not llena, "grupo": grupo})
     return filas
 
 
-def _escribir_fecha_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente) -> Optional[str]:
+def _rects_de_dibujo(page) -> List[pymupdf.Rect]:
+    return [pymupdf.Rect(it[1]) for d in page.get_drawings() for it in d["items"] if it[0] == "re"]
+
+
+def _estilo_fecha(fila: Dict) -> Optional[Dict]:
+    """Cómo está escrita la fecha de una fila: de una vez ('dd/mm/aaaa') o en tres partes con sus dos barras."""
+    grupo = fila["grupo"]
+    completas = [g for g in grupo if _RE_FECHA_COMPLETA.match(g["text"].strip())]
+    if completas:
+        return {"completa": completas[0]["origin"][0]}
+    numeros = sorted((g for g in grupo if _RE_NUM.match(g["text"].strip())), key=lambda g: g["bbox"][0])
+    if len(numeros) == 3 and len(fila["barras"]) == 2:
+        return {"partes": [n["origin"][0] for n in numeros], "barras": [b["origin"][0] for b in fila["barras"]]}
+    return None
+
+
+def _agregar_fila_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Sin fila libre: agrega UNA fila debajo de la última de NOMBRES Y FIRMAS, con la misma altura, las mismas líneas
+    verticales y las mismas posiciones de la fecha que la fila anterior, y escribe ahí la fecha de la visita.
+    Si no cabe antes del margen inferior de la hoja va al principio de la hoja siguiente; si tampoco hay sitio,
+    error. Devuelve (error, aviso).
+    """
+    sin_geometria = (f"El formulario no tiene ninguna fila libre para la fecha de autorización y no se pudo "
+                     f"copiar la geometría de la última fila ({PENDIENTE}); no se escribe nada a ciegas.")
+    filas = _filas_autorizacion(doc)
+    ultima = filas[-1] if filas else None
+    estilo = _estilo_fecha(ultima) if ultima else None
+    if estilo is None:
+        return sin_geometria, None
+    page = doc[ultima["pagina"]]
+    base = ultima["y"]
+    rects = _rects_de_dibujo(page)
+    anchas = [r for r in rects if r.width > 300 and r.height <= 2.5]
+    fondos = [r for r in anchas if r.width >= 540 and r.y0 > base]
+    inferiores = [r for r in anchas if r.y0 > base]
+    if not fondos or not inferiores:
+        return sin_geometria, None
+    fondo = min(fondos, key=lambda r: r.y0)
+    previas = [r for r in anchas if r.y1 < fondo.y0 - 3]
+    if not previas:
+        return sin_geometria, None
+    alto = fondo.y0 - max(r.y1 for r in previas)               # altura de la última fila
+    desplazamiento = min(r.y0 for r in inferiores) - base         # de la línea base a la línea inferior de su fila
+    verticales = [r for r in rects if r.width < 2.5 and r.height > 8 and r.y1 >= fondo.y0 - 0.5
+                  and r.y0 < fondo.y0 - 8]
+    espesor = fondo.height
+    destino, arriba = page, fondo.y1
+    nuevo_fondo = arriba + alto
+    if nuevo_fondo + espesor > page.rect.height - LIMITE_INFERIOR:
+        if ultima["pagina"] + 1 >= len(doc):
+            return (f"La fila nueva de autorización no cabe en la hoja y no hay hoja siguiente ({PENDIENTE}).", None)
+        destino = doc[ultima["pagina"] + 1]
+        arriba = Y_SUPERIOR_HOJA_SIGUIENTE + espesor
+        nuevo_fondo = arriba + alto
+        zona = pymupdf.Rect(fondo.x0 - 3, Y_SUPERIOR_HOJA_SIGUIENTE - 2, fondo.x1 + 3, nuevo_fondo + espesor + 2)
+        if (nuevo_fondo + espesor > destino.rect.height - LIMITE_INFERIOR
+                or any(pymupdf.Rect(sp["bbox"]).intersects(zona) for sp in _spans(destino))
+                or any(r.intersects(zona) for r in _rects_de_dibujo(destino))):
+            return (f"La fila nueva de autorización no cabe en la hoja ni hay espacio libre en la siguiente "
+                    f"({PENDIENTE}).", None)
+        destino.draw_rect(pymupdf.Rect(fondo.x0, Y_SUPERIOR_HOJA_SIGUIENTE, fondo.x1, arriba), color=None,
+                          fill=(0, 0, 0))  # borde superior de la tabla, copiado del inferior
+    for v in verticales:
+        destino.draw_rect(pymupdf.Rect(v.x0, arriba if destino is page else Y_SUPERIOR_HOJA_SIGUIENTE, v.x1,
+                                       nuevo_fondo + espesor), color=None, fill=(0, 0, 0))
+    destino.draw_rect(pymupdf.Rect(fondo.x0, nuevo_fondo, fondo.x1, nuevo_fondo + espesor), color=None, fill=(0, 0, 0))
+    y = nuevo_fondo - desplazamiento
+    kw = _kw_texto(nombre_fuente, archivo_fuente)
+    if "completa" in estilo:
+        destino.insert_text((estilo["completa"], y), fecha, **kw)
+    else:
+        for x, texto in zip(estilo["partes"], fecha.split("/")):
+            destino.insert_text((x, y), texto, **kw)
+        for x in estilo["barras"]:
+            destino.insert_text((x, y), "/", **kw)
+    donde = "en la hoja siguiente" if destino is not page else "debajo de la última"
+    return None, f"No había fila libre de autorización: se agregó una fila nueva {donde} con la fecha {fecha}."
+
+
+def _escribir_fecha_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente) -> Tuple[Optional[str], Optional[str]]:
     """
     Escribe dd/mm/aaaa de la visita en la siguiente fila de autorización libre. Las fechas anteriores se
-    conservan; sin fila libre => error y no se sobrescribe nada. Devuelve un mensaje de error o None.
+    conservan; sin fila libre se agrega una fila nueva (ver _agregar_fila_autorizacion). Devuelve (error, aviso).
     """
     libre = next((f for f in _filas_autorizacion(doc) if f["libre"]), None)
     if libre is None:
-        return (f"El formulario no tiene ninguna fila libre para la fecha de autorización: no se sobrescribe "
-                f"una anterior ({PENDIENTE}).")
+        return _agregar_fila_autorizacion(doc, fecha, nombre_fuente, archivo_fuente)
     page = doc[libre["pagina"]]
     dia, mes, anio = fecha.split("/")
     pos = {m["text"].strip().lower(): m["bbox"][0] for m in libre["marcadores"]}
@@ -375,12 +456,12 @@ def _escribir_fecha_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente)
         x_dia, x_mes, x_anio = pos["dd"], pos["mm"], pos["aaaa"]
     else:
         return (f"No se pudo ubicar dónde escribir la fecha de autorización en la fila libre ({PENDIENTE}); "
-                "no se escribe nada a ciegas.")
+                "no se escribe nada a ciegas."), None
     _redactar(page, [pymupdf.Rect(m["bbox"]) for m in libre["marcadores"]])
     kw = _kw_texto(nombre_fuente, archivo_fuente)
     for x, texto in ((x_dia, dia), (x_mes, mes), (x_anio, anio)):
         page.insert_text((x, libre["y"]), texto, **kw)
-    return None
+    return None, None
 
 
 def _filas_condicionales(tipo_fi: str, elementos: List[str]) -> set:
@@ -462,7 +543,8 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
     - elementos: nombres de lo supervisado en la visita (se agregan a Observaciones).
     - visita: fecha (DD/MM/AAAA), clase (Parcial/Completivo) y, opcional, discrepancias_abiertas.
     """
-    res = {"ok": False, "ruta": None, "errores": [], "avisos": [], "marcas": 0, "cierre_movido": []}
+    res = {"ok": False, "ruta": None, "errores": [], "avisos": [], "marcas": 0, "cierre_movido": [],
+           "fila_agregada": False}
     if tipo_fi not in TIPOS_FI:
         return _error(res, f"Tipo de formulario '{tipo_fi}' desconocido; usa FI-01, FI-02 o FI-03.")
     for campo in ("nombre", "no_licencia", "no_solicitud", "residente_obra", "direccion_obra"):
@@ -513,9 +595,12 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
         res["cierre_movido"] = movidos
         if movidos:
             res["avisos"].append("El cierre anterior se movió después de la observación nueva: " + " | ".join(movidos))
-        err = _escribir_fecha_autorizacion(doc, fecha, nombre_fuente, archivo_fuente)
+        err, aviso = _escribir_fecha_autorizacion(doc, fecha, nombre_fuente, archivo_fuente)
         if err:
             return _error(res, err)
+        if aviso:
+            res["avisos"].append(aviso)
+            res["fila_agregada"] = True
         extra = _filas_condicionales(tipo_fi, elementos)
         if extra:
             res["avisos"].append(f"La visita trae dinteles/cerramiento: se marcan también las filas {', '.join(sorted(extra))}.")

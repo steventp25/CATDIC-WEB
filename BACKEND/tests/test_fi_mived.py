@@ -44,7 +44,8 @@ ROTULOS_CABECERA = [  # (rótulo, x del rótulo, base, clave, x del valor, base 
 
 
 def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), omitir=(), firmas=True,
-             anotacion=True, cabecera=None, sin_caja=(), fechas_aut=("llena", "libre")) -> Path:
+             anotacion=True, cabecera=None, sin_caja=(), fechas_aut=("llena", "libre"), tabla=False,
+             y_filas=(789.9, 809.9, 829.9), hoja_siguiente=False) -> Path:
     """FI sintético: filas con 'Sí'/'No' y su caja en las hojas 1..n-1; observaciones y firmas en la última."""
     doc = pymupdf.open()
     codigos = sorted(FILAS_SI[tipo] | set(EXTRA_NO_MARCAR[tipo]), key=lambda c: (int(re.match(r"\d+", c).group()), c))
@@ -86,11 +87,11 @@ def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), om
     pag.insert_text((194.6, 484.8), "13. OBSERVACIONES", fontsize=10.6, fontname="hebo")
     for i, linea in enumerate(obs):
         pag.insert_text((26.8, 502.6 + i * 15.8), linea, fontsize=10.6)
-    pag.insert_text((185.8, 753.7), "14. NOMBRES Y FIRMAS", fontsize=10.6, fontname="hebo")
-    pag.insert_text((298.7, 774.2), "Firma", fontsize=10.6)
+    pag.insert_text((185.8, y_filas[0] - 36.2), "14. NOMBRES Y FIRMAS", fontsize=10.6, fontname="hebo")
+    pag.insert_text((298.7, y_filas[0] - 15.7), "Firma", fontsize=10.6)
     if firmas:
         # Filas de autorización: "llena" (con cifras), "libre" (con el dd / mm / aaaa impreso) o "vacia" (solo barras)
-        for y_base, estado in zip((789.9, 809.9, 829.9), fechas_aut):
+        for y_base, estado in zip(y_filas, fechas_aut):
             pag.insert_text((176.5, y_base), "NOMBRE SINT", fontsize=10.6)
             pag.insert_text((487.6, y_base), "/ ", fontsize=10.6)
             pag.insert_text((518.5, y_base), "/ ", fontsize=10.6)
@@ -100,10 +101,22 @@ def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), om
             elif estado == "libre":
                 for x, t in ((473.2, "dd"), (506.6, "mm"), (546.4, "aaaa")):
                     pag.insert_text((x, y_base), t, fontsize=10.6)
+    if tabla and firmas:
+        # Tabla de firmas: una línea fina bajo cada fila, borde inferior grueso y verticales hasta el borde
+        filas_y = y_filas[:len(fechas_aut)]
+        arriba = filas_y[0] - 14
+        fondo_y = filas_y[-1] + 5
+        for y_base in filas_y[:-1]:
+            pag.draw_rect(pymupdf.Rect(16.0, y_base + 5, 578.3, y_base + 5.9), color=None, fill=(0, 0, 0))
+        pag.draw_rect(pymupdf.Rect(16.0, fondo_y, 580.1, fondo_y + 1.8), color=None, fill=(0, 0, 0))
+        for x0, x1 in ((14.2, 16.0), (162.4, 163.3), (304.2, 305.2), (403.2, 404.2), (468.1, 469.1), (578.3, 580.1)):
+            pag.draw_rect(pymupdf.Rect(x0, arriba, x1, fondo_y), color=None, fill=(0, 0, 0))
     if anotacion:
         a = pag.add_rect_annot(pymupdf.Rect(329.6, 796.5, 365.8, 816.2))
         a.set_info(title="Inspector")
         a.update()
+    if hoja_siguiente:
+        doc.new_page(width=595.32, height=841.92)
     doc.save(str(ruta))
     doc.close()
     return ruta
@@ -328,6 +341,76 @@ def test_sin_fila_libre_es_error_y_no_se_sobrescribe_ninguna(entorno):
     assert not (entorno / "salida").exists()
 
 
+def _palabras_en(ruta: Path, pagina: int):
+    doc = pymupdf.open(str(ruta))
+    try:
+        return [(w[4], w[1], w[3]) for w in doc[pagina].get_text("words")]
+    finally:
+        doc.close()
+
+
+def _lineas_anchas(ruta: Path, pagina: int):
+    doc = pymupdf.open(str(ruta))
+    try:
+        return sorted(r.y0 for d in doc[pagina].get_drawings() for it in d["items"] if it[0] == "re"
+                      for r in [pymupdf.Rect(it[1])] if r.width >= 540 and r.height <= 2.5)
+    finally:
+        doc.close()
+
+
+def test_sin_fila_libre_agrega_una_fila_nueva_debajo_de_la_ultima_con_la_geometria_de_la_anterior(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                    tabla=True, y_filas=(600.0, 620.0))
+    hash_antes = _hash(base)
+    lineas_antes = _lineas_anchas(base, len(pymupdf.open(str(base))) - 1)
+    r = _llamar(entorno, existente=base)
+    assert r["ok"] and r["fila_agregada"], r
+    assert _hash(base) == hash_antes
+    assert any("fila nueva" in a for a in r["avisos"])
+    ultima = len(pymupdf.open(str(r["ruta"]))) - 1
+    nuevas = [y for y in _lineas_anchas(r["ruta"], ultima) if y > 625]
+    assert len(nuevas) == 1 and abs(nuevas[0] - (lineas_antes[-1] + 1.8 + 20)) < 1.0  # misma altura de fila (20 pt)
+    palabras = _palabras_en(r["ruta"], ultima)
+    nuevas_p = {w for w, y0, y1 in palabras if y0 > 626}
+    assert {"15", "10", "2026"} <= nuevas_p and "dd" not in nuevas_p
+    # misma posición horizontal que la fecha de la fila anterior
+    doc = pymupdf.open(str(r["ruta"]))
+    xs = {w[4]: w[0] for w in doc[ultima].get_text("words") if w[4] in ("02", "10", "2026", "15")}
+    doc.close()
+    assert abs(xs["15"] - xs["02"]) < 1.5
+    assert len(_marcas(r["ruta"])) == len(FILAS_SI["FI-02"])  # y todo lo demás sigue como antes
+
+
+def test_la_fila_nueva_que_no_cabe_va_en_la_hoja_siguiente(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                    tabla=True, hoja_siguiente=True)
+    r = _llamar(entorno, existente=base)
+    assert r["ok"] and r["fila_agregada"], r
+    assert any("hoja siguiente" in a for a in r["avisos"])
+    doc = pymupdf.open(str(r["ruta"]))
+    siguiente = doc[len(doc) - 1]
+    assert {"15", "10", "2026"} <= {w[4] for w in siguiente.get_text("words")}
+    assert not {"15"} & {w[4] for w in doc[len(doc) - 2].get_text("words") if w[1] > 826}
+    doc.close()
+
+
+def test_la_fila_nueva_sin_espacio_ni_hoja_siguiente_es_error_y_no_escribe(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"), tabla=True)
+    r = _llamar(entorno, existente=base)
+    assert not r["ok"] and r["ruta"] is None and "no cabe" in r["errores"][0]
+    assert not (entorno / "salida").exists()
+    # con hoja siguiente pero ocupada tampoco hay sitio
+    base2 = crear_fi(entorno / "base2.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                     tabla=True, hoja_siguiente=True)
+    doc = pymupdf.open(str(base2))
+    doc[len(doc) - 1].insert_text((60, 120), "CONTENIDO PREVIO", fontsize=10.6)
+    ruta = entorno / "base3.pdf"
+    doc.save(str(ruta))
+    doc.close()
+    r = _llamar(entorno, existente=ruta)
+    assert not r["ok"] and "no cabe" in r["errores"][0]
+
+
 def test_el_cierre_anterior_queda_al_final_con_el_mismo_texto(entorno):
     cierre = "Todo segun los planos estructurales."
     base = crear_fi(entorno / "con_cierre.pdf", "FI-02", nivel=NIVEL,
@@ -516,11 +599,40 @@ FI_REALES = [
 ]
 
 
+def _limite_tabla_firmas(ruta: Path):
+    """(pagina, y del borde inferior) de la tabla NOMBRES Y FIRMAS: la línea ancha más baja de la hoja de la fecha."""
+    doc = pymupdf.open(str(ruta))
+    try:
+        fechas = [(i, s["origin"][1]) for i, p in enumerate(doc) for b in p.get_text("dict")["blocks"]
+                  for l in b.get("lines", []) for s in l["spans"]
+                  if s["bbox"][0] >= 455 and re.match(r"^(\d{2}/\d{2}/\d{4}|\d{4})$", s["text"].strip())]
+        pagina, base = fechas[-1]
+        anchas = [r for d in doc[pagina].get_drawings() for it in d["items"] if it[0] == "re"
+                  for r in [pymupdf.Rect(it[1])] if r.width >= 540 and r.height <= 2.5 and r.y0 > base]
+        return pagina, max(r.y1 for r in anchas), base
+    finally:
+        doc.close()
+
+
+def _comprobar_fila_nueva(antes: Path, despues: Path):
+    """La fila nueva queda debajo de la última, con la fecha y con la misma altura de fila que la anterior."""
+    pag, fondo_antes, base_antes = _limite_tabla_firmas(antes)
+    pag2, fondo_despues, base_despues = _limite_tabla_firmas(despues)
+    assert pag2 == pag and fondo_despues > fondo_antes + 8          # la tabla creció una fila
+    assert base_despues > fondo_antes                                # la fecha nueva cae debajo de la tabla vieja
+    doc = pymupdf.open(str(despues))
+    try:
+        palabras = {w[4] for w in doc[pag].get_text("words") if w[1] > fondo_antes - 1 and w[3] < fondo_despues + 1}
+    finally:
+        doc.close()
+    assert {"15", "10", "2026"} <= palabras or "15/10/2026" in palabras
+
+
 @pytest.mark.parametrize("tipo,archivo,clave,anotaciones_antes", FI_REALES)
 def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, anotaciones_antes):
     """
     Solo el FI-02 #12 trae filas de autorización libres (en su 4.ª hoja). El FI-01 #1 y el FI-03 #10 ya tienen todas
-    sus filas llenas: ahí el generador se detiene con error en vez de sobrescribir una fecha anterior.
+    sus filas llenas: ahí el generador agrega una fila nueva debajo de la última (respuesta "c." de Steven).
     """
     import shutil
     original = RAIZ_FI / archivo
@@ -541,12 +653,11 @@ def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, an
         assert clave
     r = fi_mived.actualizar_fi(tipo, PROYECTO, _visita(), nivel_actual or "FUNDACIONES", clave,
                                ["ELEMENTO SINTETICO 1", "ELEMENTO SINTETICO 2"], existente=copia, usuario="prueba")
-    if tipo != "FI-02":
-        assert not r["ok"] and "ninguna fila libre" in r["errores"][0]
-        assert _hash(original) == hash_antes and not (entorno / "salida").exists()
-        return
     assert r["ok"], r
     assert _hash(original) == hash_antes  # el original no cambió (ni el de la copia de partida)
+    assert r["fila_agregada"] == (tipo != "FI-02")
+    if tipo != "FI-02":
+        _comprobar_fila_nueva(copia, r["ruta"])
     out = pymupdf.open(str(r["ruta"]))
     # Los datos de cabecera que ya traía el FI no se tocan (ni siquiera con otros datos de proyecto)
     cabecera_despues = fi_mived.limpiar_extraido(out[0].get_text("text", clip=pymupdf.Rect(0, 100, 600, 165)))
