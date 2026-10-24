@@ -44,7 +44,7 @@ ROTULOS_CABECERA = [  # (rótulo, x del rótulo, base, clave, x del valor, base 
 
 
 def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), omitir=(), firmas=True,
-             anotacion=True, cabecera=None, sin_caja=()) -> Path:
+             anotacion=True, cabecera=None, sin_caja=(), fechas_aut=("llena", "libre")) -> Path:
     """FI sintético: filas con 'Sí'/'No' y su caja en las hojas 1..n-1; observaciones y firmas en la última."""
     doc = pymupdf.open()
     codigos = sorted(FILAS_SI[tipo] | set(EXTRA_NO_MARCAR[tipo]), key=lambda c: (int(re.match(r"\d+", c).group()), c))
@@ -89,10 +89,17 @@ def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), om
     pag.insert_text((185.8, 753.7), "14. NOMBRES Y FIRMAS", fontsize=10.6, fontname="hebo")
     pag.insert_text((298.7, 774.2), "Firma", fontsize=10.6)
     if firmas:
-        for y_base in (789.9, 809.9):
+        # Filas de autorización: "llena" (con cifras), "libre" (con el dd / mm / aaaa impreso) o "vacia" (solo barras)
+        for y_base, estado in zip((789.9, 809.9, 829.9), fechas_aut):
             pag.insert_text((176.5, y_base), "NOMBRE SINT", fontsize=10.6)
-            for x, t in ((466.7, "02"), (500.6, "10"), (540.2, "2026")):
-                pag.insert_text((x, y_base), t, fontsize=10.6)
+            pag.insert_text((487.6, y_base), "/ ", fontsize=10.6)
+            pag.insert_text((518.5, y_base), "/ ", fontsize=10.6)
+            if estado == "llena":
+                for x, t in ((466.7, "02"), (500.6, "10"), (540.2, "2026")):
+                    pag.insert_text((x, y_base), t, fontsize=10.6)
+            elif estado == "libre":
+                for x, t in ((473.2, "dd"), (506.6, "mm"), (546.4, "aaaa")):
+                    pag.insert_text((x, y_base), t, fontsize=10.6)
     if anotacion:
         a = pag.add_rect_annot(pymupdf.Rect(329.6, 796.5, 365.8, 816.2))
         a.set_info(title="Inspector")
@@ -234,20 +241,62 @@ def test_si_falta_una_fila_obligatoria_no_marca_a_ciegas(entorno):
 
 
 def _palabras_de_firmas(ruta: Path):
+    """(palabra, y) de la zona de fechas de autorización de la última hoja."""
     doc = pymupdf.open(str(ruta))
     try:
-        return [w[4] for w in doc[-1].get_text("words") if w[1] > 770 and w[0] >= 460]
+        return [(w[4], round(w[1])) for w in doc[-1].get_text("words") if w[1] > 770 and w[0] >= 455]
     finally:
         doc.close()
 
 
-def test_las_fechas_de_autorizacion_anteriores_se_conservan_y_no_se_escribe_ninguna_nueva(entorno, existente):
+def test_la_fecha_de_autorizacion_va_en_la_siguiente_fila_libre_y_las_anteriores_se_conservan(entorno, existente):
     r = _llamar(entorno, existente=existente)
-    assert {"02", "10", "2026"} <= set(_palabras_de_firmas(r["ruta"]))  # histórico de visitas anteriores
-    # Un FI en blanco no recibe ninguna fecha de autorización nueva
-    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", firmas=False)
-    r2 = _llamar(entorno, en_blanco=blanco)
-    assert r2["ok"] and not [w for w in _palabras_de_firmas(r2["ruta"]) if re.fullmatch(r"\d{2}|\d{4}", w)]
+    assert r["ok"], r
+    palabras = _palabras_de_firmas(r["ruta"])
+    fila1 = sorted(w for w, y in palabras if y < 800)
+    fila2 = sorted(w for w, y in palabras if y >= 800)
+    assert {"02", "10", "2026"} <= set(fila1)  # la fila llena de una visita anterior, intacta
+    assert {"15", "10", "2026"} <= set(fila2) and not {"dd", "mm", "aaaa"} & set(fila2)  # la de esta visita
+
+
+def test_una_fila_con_solo_barras_tambien_es_libre_y_se_usa_la_primera(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "vacia", "libre"))
+    r = _llamar(entorno, existente=base)
+    assert r["ok"], r
+    palabras = _palabras_de_firmas(r["ruta"])
+    assert {"15", "10", "2026"} <= {w for w, y in palabras if 796 <= y < 816}  # la 2.ª fila (la 1.ª libre)
+    assert {"dd", "mm", "aaaa"} <= {w for w, y in palabras if y >= 816}        # la 3.ª sigue libre
+
+
+def test_sin_fila_libre_es_error_y_no_se_sobrescribe_ninguna(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"))
+    r = _llamar(entorno, existente=base)
+    assert not r["ok"] and r["ruta"] is None and "ninguna fila libre" in r["errores"][0]
+    assert not (entorno / "salida").exists()
+
+
+def test_el_cierre_anterior_queda_al_final_con_el_mismo_texto(entorno):
+    cierre = "Todo segun los planos estructurales."
+    base = crear_fi(entorno / "con_cierre.pdf", "FI-02", nivel=NIVEL,
+                    obs=["Observacion anterior UNO.", "Observacion anterior DOS.", "", cierre])
+    r = _llamar(entorno, existente=base, visita=_visita(clase="Completivo"))
+    assert r["ok"], r
+    assert r["cierre_movido"] == [cierre] and "se movió" in " ".join(r["avisos"])
+    doc = pymupdf.open(str(r["ruta"]))
+    palabras = doc[-1].get_text("words")
+    doc.close()
+
+    def y_de(texto):
+        return min(w[1] for w in palabras if fi_mived.limpiar_extraido(w[4]) == texto)
+    assert y_de("UNO.") < y_de("DOS.") < y_de("PARCIAL:".replace("PARCIAL", "COMPLETIVO")) < y_de("Todo")
+    assert y_de("CONFORME") < y_de("Todo")  # la conformidad nueva también va antes del cierre anterior
+    texto = " ".join(_texto(r["ruta"]).split())
+    assert texto.count(cierre) == 1  # no se duplica ni se pierde
+
+
+def test_sin_cierre_anterior_no_se_mueve_nada(entorno, existente):
+    r = _llamar(entorno, existente=existente)
+    assert r["ok"] and r["cierre_movido"] == []
 
 
 # ---------- P5 y #18 ----------
@@ -298,7 +347,7 @@ def _valor_en_fila(ruta: Path, rotulo: str, lado_der: bool = False) -> str:
 
 
 def test_la_plantilla_en_blanco_recibe_los_5_campos_del_proyecto(entorno):
-    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", anotacion=False, firmas=False)
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", anotacion=False, fechas_aut=("libre", "libre"))
     r = _llamar(entorno, en_blanco=blanco)
     assert r["ok"], r
     assert _valor_en_fila(r["ruta"], "Nombre del proyecto") == "Proyecto Sintetico"
@@ -323,7 +372,7 @@ def test_un_valor_ya_escrito_no_se_sobrescribe_y_si_difiere_hay_aviso(entorno):
 
 
 def test_un_valor_muy_largo_se_reduce_o_no_cabe(entorno):
-    blanco = crear_fi(entorno / "blanco.pdf", "FI-02")
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", fechas_aut=("libre", "libre"))
     r = _llamar(entorno, en_blanco=blanco, proyecto={**PROYECTO, "direccion_obra": "CALLE LARGUISIMA " * 3})
     assert r["ok"] and "LARGUISIMA" in _valor_en_fila(r["ruta"], "Dirección")
     r2 = _llamar(entorno, en_blanco=blanco, proyecto={**PROYECTO, "direccion_obra": "X" * 400})
@@ -416,6 +465,10 @@ FI_REALES = [
 
 @pytest.mark.parametrize("tipo,archivo,clave,anotaciones_antes", FI_REALES)
 def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, anotaciones_antes):
+    """
+    Solo el FI-02 #12 trae filas de autorización libres (en su 4.ª hoja). El FI-01 #1 y el FI-03 #10 ya tienen todas
+    sus filas llenas: ahí el generador se detiene con error en vez de sobrescribir una fecha anterior.
+    """
     import shutil
     original = RAIZ_FI / archivo
     if not original.is_file():
@@ -435,6 +488,10 @@ def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, an
         assert clave
     r = fi_mived.actualizar_fi(tipo, PROYECTO, _visita(), nivel_actual or "FUNDACIONES", clave,
                                ["ELEMENTO SINTETICO 1", "ELEMENTO SINTETICO 2"], existente=copia, usuario="prueba")
+    if tipo != "FI-02":
+        assert not r["ok"] and "ninguna fila libre" in r["errores"][0]
+        assert _hash(original) == hash_antes and not (entorno / "salida").exists()
+        return
     assert r["ok"], r
     assert _hash(original) == hash_antes  # el original no cambió (ni el de la copia de partida)
     out = pymupdf.open(str(r["ruta"]))

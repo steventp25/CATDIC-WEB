@@ -7,8 +7,8 @@
 # diccionarios. Regla de Oro #1: nada de datos fijos de ningún proyecto; lo que falte => error y no se
 # escribe nada. Nunca se inserta una firma y se borran todas las anotaciones (#16); la mampostería nunca se
 # marca (#17); si ya existe un FI del mismo nivel y tipo se actualiza como versión nueva (#18) y nunca se
-# parte del FI de otro nivel. Las fechas de autorización de visitas anteriores NO se tocan (regla de Steven
-# pendiente): "en blanco" significa solo que no se escribe ninguna fecha nueva.
+# parte del FI de otro nivel. La fecha de autorización es la de la visita y va en la siguiente fila libre; las
+# anteriores se conservan (respuesta de Steven, 23/10/2026).
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -254,8 +254,13 @@ def _envolver(texto: str, ancho: float, tam: float, fuente: pymupdf.Font) -> Lis
     return lineas
 
 
-def _agregar_observaciones(doc, tipo_fi: str, lineas_nuevas: List[str], nombre_fuente, archivo_fuente) -> Optional[str]:
-    """Agrega las líneas debajo de las observaciones existentes. Devuelve un mensaje de error o None."""
+def _agregar_observaciones(doc, tipo_fi: str, lineas_nuevas: List[str], nombre_fuente,
+                          archivo_fuente) -> Tuple[Optional[str], List[str]]:
+    """
+    Agrega las líneas debajo de las observaciones existentes. Si el FI trae un cierre anterior ("Todo segun ..."),
+    se tapa con redacción blanca y se vuelve a escribir igual DESPUÉS de la observación nueva (respuesta de
+    Steven). Devuelve (mensaje de error o None, textos del cierre que se movieron).
+    """
     for page in doc:
         spans = _spans(page)
         cab = next((s for s in spans if _RE_OBS.match(s["text"].strip())), None)
@@ -263,20 +268,112 @@ def _agregar_observaciones(doc, tipo_fi: str, lineas_nuevas: List[str], nombre_f
             continue
         firmas = next((s for s in spans if _RE_FIRMAS.match(s["text"].strip()) and s["bbox"][1] > cab["bbox"][3]), None)
         limite = (firmas["bbox"][1] - 6) if firmas else page.rect.height - 40
-        existentes = [s for s in spans if s["bbox"][1] > cab["bbox"][3] and s["bbox"][3] < limite]
-        base = (max(s["origin"][1] for s in existentes) + INTERLINEADO) if existentes else cab["bbox"][3] + 15.0
+        existentes = sorted((s for s in spans if s["bbox"][1] > cab["bbox"][3] and s["bbox"][3] < limite),
+                            key=lambda s: (s["origin"][1], s["bbox"][0]))
+        inicio_cierre = next((i for i, s in enumerate(existentes)
+                              if _normalizar_texto(s["text"]).startswith("TODO SEGUN")), None)
+        cierre = existentes[inicio_cierre:] if inicio_cierre is not None else []
+        previas = existentes[:inicio_cierre] if inicio_cierre is not None else existentes
+        base = (max(s["origin"][1] for s in previas) + INTERLINEADO) if previas else cab["bbox"][3] + 15.0
         x0 = min((s["bbox"][0] for s in existentes), default=X_OBS_POR_DEFECTO[tipo_fi])
         fuente = pymupdf.Font(fontfile=archivo_fuente) if archivo_fuente else pymupdf.Font("helv")
         ancho = page.rect.width - x0 - 20
         envueltas = [l for texto in lineas_nuevas for l in _envolver(texto, ancho, TAMANO_OBS, fuente)]
-        if base + (len(envueltas) - 1) * INTERLINEADO > limite:
+        ultima_nueva = base + (len(envueltas) - 1) * INTERLINEADO
+        # El cierre conserva la separación que tenía respecto de la última observación (mínimo una línea en blanco)
+        hueco = max(2 * INTERLINEADO, (cierre[0]["origin"][1] - previas[-1]["origin"][1]) if cierre and previas else 0)
+        base_cierre = ultima_nueva + hueco
+        ultima = base_cierre + (cierre[-1]["origin"][1] - cierre[0]["origin"][1]) if cierre else ultima_nueva
+        if ultima > limite:
             return (f"Las observaciones no caben en el espacio disponible del formulario "
-                    f"({len(envueltas)} líneas nuevas): {PENDIENTE}.")
+                    f"({len(envueltas)} líneas nuevas): {PENDIENTE}."), []
+        movidos = [s["text"].strip() for s in cierre]
+        if cierre:
+            _redactar(page, [pymupdf.Rect(s["bbox"]) for s in cierre])
         kw = _kw_texto(nombre_fuente, archivo_fuente)
         for i, linea in enumerate(envueltas):
             page.insert_text((x0, base + i * INTERLINEADO), linea, **kw)
-        return None
-    return f"El formulario no trae la sección OBSERVACIONES ({PENDIENTE})."
+        for s in cierre:
+            y = base_cierre + (s["origin"][1] - cierre[0]["origin"][1])
+            page.insert_text((s["bbox"][0], y), s["text"].strip(), **kw)
+        return None, movidos
+    return f"El formulario no trae la sección OBSERVACIONES ({PENDIENTE}).", []
+
+
+# ---------- Fechas de autorización de vaciado ----------
+
+_RE_SEP = re.compile(r"^/\s*$")
+_RE_NUM = re.compile(r"^(\d{2}|\d{4})$")
+_RE_FECHA_COMPLETA = re.compile(r"^\d{2}/\d{2}/\d{4}$")  # fecha escrita de una sola vez, como en algunos FI llenados
+_PLACEHOLDER = {"dd", "mm", "aaaa"}
+
+
+def _filas_autorizacion(doc) -> List[Dict]:
+    """
+    Filas 'dd / mm / aaaa' de la sección NOMBRES Y FIRMAS (de la hoja del rótulo en adelante), de arriba abajo.
+    Una fila está LIBRE si no trae ninguna cifra (solo el 'dd / mm / aaaa' impreso o solo las barras).
+    """
+    filas: List[Dict] = []
+    visto = False
+    for page in doc:
+        spans = _spans(page)
+        cab = next((s for s in spans if _RE_FIRMAS.match(s["text"].strip())), None)
+        if cab is not None:
+            visto = True
+            y_min = cab["bbox"][3]
+        elif visto:
+            y_min = 80.0  # en las hojas siguientes se salta el encabezado impreso (con su fecha de impresión)
+        else:
+            continue
+        candidatos = sorted((s for s in spans if s["bbox"][0] >= 455 and s["bbox"][1] > y_min and (
+            _RE_SEP.match(s["text"].strip()) or _RE_NUM.match(s["text"].strip())
+            or _RE_FECHA_COMPLETA.match(s["text"].strip()) or s["text"].strip().lower() in _PLACEHOLDER)),
+                            key=lambda s: s["origin"][1])
+        grupos: List[List[Dict]] = []
+        for s in candidatos:  # una fila reúne los textos cuya línea base difiere en menos de 3 pt
+            if grupos and s["origin"][1] - grupos[-1][-1]["origin"][1] < 3.0:
+                grupos[-1].append(s)
+            else:
+                grupos.append([s])
+        for grupo in grupos:
+            barras = sorted((g for g in grupo if _RE_SEP.match(g["text"].strip())), key=lambda g: g["bbox"][0])
+            marcadores = [g for g in grupo if g["text"].strip().lower() in _PLACEHOLDER]
+            llena = any(_RE_NUM.match(g["text"].strip()) or _RE_FECHA_COMPLETA.match(g["text"].strip())
+                        for g in grupo)
+            if len(barras) < 2 and not marcadores and not llena:
+                continue  # no es una fila de fecha
+            filas.append({"pagina": page.number, "barras": barras[:2], "y": grupo[0]["origin"][1],
+                          "marcadores": marcadores, "libre": not llena})
+    return filas
+
+
+def _escribir_fecha_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente) -> Optional[str]:
+    """
+    Escribe dd/mm/aaaa de la visita en la siguiente fila de autorización libre. Las fechas anteriores se
+    conservan; sin fila libre => error y no se sobrescribe nada. Devuelve un mensaje de error o None.
+    """
+    libre = next((f for f in _filas_autorizacion(doc) if f["libre"]), None)
+    if libre is None:
+        return (f"El formulario no tiene ninguna fila libre para la fecha de autorización: no se sobrescribe "
+                f"una anterior ({PENDIENTE}).")
+    page = doc[libre["pagina"]]
+    dia, mes, anio = fecha.split("/")
+    pos = {m["text"].strip().lower(): m["bbox"][0] for m in libre["marcadores"]}
+    if len(libre["barras"]) == 2:
+        s1, s2 = libre["barras"]
+        x_dia = pos.get("dd", s1["bbox"][0] - 20.9)
+        x_mes = pos.get("mm", s1["bbox"][0] + 13.0)
+        x_anio = pos.get("aaaa", s2["bbox"][0] + 21.6)
+    elif {"dd", "mm", "aaaa"} <= set(pos):
+        x_dia, x_mes, x_anio = pos["dd"], pos["mm"], pos["aaaa"]
+    else:
+        return (f"No se pudo ubicar dónde escribir la fecha de autorización en la fila libre ({PENDIENTE}); "
+                "no se escribe nada a ciegas.")
+    _redactar(page, [pymupdf.Rect(m["bbox"]) for m in libre["marcadores"]])
+    kw = _kw_texto(nombre_fuente, archivo_fuente)
+    for x, texto in ((x_dia, dia), (x_mes, mes), (x_anio, anio)):
+        page.insert_text((x, libre["y"]), texto, **kw)
+    return None
 
 
 def _marcar_si(doc, tipo_fi: str) -> Tuple[int, List[str]]:
@@ -349,7 +446,7 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
     - elementos: nombres de lo supervisado en la visita (se agregan a Observaciones).
     - visita: fecha (DD/MM/AAAA), clase (Parcial/Completivo) y, opcional, discrepancias_abiertas.
     """
-    res = {"ok": False, "ruta": None, "errores": [], "avisos": [], "marcas": 0}
+    res = {"ok": False, "ruta": None, "errores": [], "avisos": [], "marcas": 0, "cierre_movido": []}
     if tipo_fi not in TIPOS_FI:
         return _error(res, f"Tipo de formulario '{tipo_fi}' desconocido; usa FI-01, FI-02 o FI-03.")
     for campo in ("nombre", "no_licencia", "no_solicitud", "residente_obra", "direccion_obra"):
@@ -394,7 +491,13 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
         lineas = [f"{fecha} - {clase.upper()}: Se supervisaron {', '.join(elementos)}."]
         if clase == "Completivo" and not (visita.get("discrepancias_abiertas") or []):
             lineas.append("CONFORME A PLANOS APROBADOS")
-        err = _agregar_observaciones(doc, tipo_fi, lineas, nombre_fuente, archivo_fuente)
+        err, movidos = _agregar_observaciones(doc, tipo_fi, lineas, nombre_fuente, archivo_fuente)
+        if err:
+            return _error(res, err)
+        res["cierre_movido"] = movidos
+        if movidos:
+            res["avisos"].append("El cierre anterior se movió después de la observación nueva: " + " | ".join(movidos))
+        err = _escribir_fecha_autorizacion(doc, fecha, nombre_fuente, archivo_fuente)
         if err:
             return _error(res, err)
         marcas, no_halladas = _marcar_si(doc, tipo_fi)
