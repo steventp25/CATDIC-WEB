@@ -101,3 +101,65 @@ El Auditor lo verificó todo en solo lectura:
   - un choque del UNIQUE con EJES `pendiente de verificar` tiene que acabar en duda;
   - hay que normalizar el nivel.
 - La BD real ya tiene el esquema de T1 y `main` todavía no. No rompe nada, pero conviene fusionar T1 pronto.
+
+## Evaluación 3 · 24/10/2026 · Auditor CATDIC · T3n, reconocimiento del PDF vectorial (rama `claude/etapa2-t3n-reconocimiento-plano`, `b2f2db7`)
+**Veredicto: APROBADO.** Todo se contrastó en solo lectura con PyMuPDF.
+
+### Comprobaciones
+- **Cajetín:** solo trae `NN/36`; la numeración real llega a 40/36. Los títulos de las hojas coinciden con la tabla del informe. El sellado no tiene texto (lo generó un RICOH).
+- **Capas y texto:** 83 capas, ninguna apagada. Ninguno de los 31 084 trazos de texto es invisible.
+- **Tablas:**
+  - p6: zapata de lindero.
+  - p10 y p26: losas A, B y C.
+  - Las filas hay que agruparlas con tolerancia en `y` (±3-4 pt).
+  - No hay tabla de columnas ni campos `Asxi`/`Asyv`.
+  - Ningún texto cruza `L#` con el tipo A/B/C.
+- **Ejes:** los globos `A`, `B` y `C` de la p26 se ubican bien, pero hay 19 textos "A" en la hoja, así que la ambigüedad es real.
+- **Nota de la p19:** el texto está partido en varias líneas; hay que unirlas para detectarlo.
+- **Emparejamiento:** las hojas extra son la 9 y la 10, con un corrimiento de +2. La comprobación es visual; la confirma el usuario.
+- **Equivalencia E-n ↔ planta:** pendiente, porque no hay ningún texto que la indique.
+- **Datos del cliente:** no hay imágenes. Detalle menor: `EXP. AX-24-01` y `AGOSTO 2024` siguen en claro.
+
+### Qué implica para T6n (opinión del Auditor)
+1. Leer por posición: agrupar por `y` con tolerancia y anclar cada tabla a su encabezado. Usar `rotation_matrix` en las hojas giradas. Nunca rellenar un dato por vecindad.
+2. Hay tres cruces que el plano no da: (a) E-n ↔ nivel, (b) `L#` ↔ tipo, (c) ID ↔ cruce de ejes. Los dos primeros los da el usuario por obra. Mientras falten, el campo queda pendiente con `DUDA_BLOQUEANTE`.
+3. Los ejes se leen solo de los globos (el círculo en el margen).
+4. El armado de columnas y muros se lee de las llamadas que hay en la región de cada dibujo. El extractor propone candidatos y no escribe directamente en la BD.
+5. Lo que se puede leer con confianza para empezar:
+   - el índice de hojas;
+   - las tablas de losas y de la zapata de lindero;
+   - el f'c por rango E-n;
+   - los ID en planta con su posición;
+   - los espesores `H=`.
+6. Las notas de modificación generan una `DUDA_BLOQUEANTE`; nunca se aplican solas.
+7. Los rótulos S-1/S-2 se repiten en cada hoja, así que la clave debe incluir la hoja.
+8. `fuente_json` guarda la hoja, la página, el bbox y la capa.
+9. Al crear la obra hay que preguntar al usuario por las dos plantas de techo y por cómo emparejar las hojas.
+
+## Evaluación 4 · 24/10/2026 · Auditor CATDIC · T6n-a, núcleo del lector de planos (rama `claude/etapa2-t6na-lector-plano`, `463c322`)
+**Veredicto: APROBADO.** El Auditor repitió la corrida en solo lectura y confirmó que el PDF quedó con el mismo hash.
+
+**Lo que se comprobó**
+- Las 41 hojas están indexadas.
+- Las losas de p10 y p26 coinciden con T3n. Las celdas desplazadas se asignaron bien y AS. ADIC. queda pendiente.
+- La zapata de p6 coincide con T3n.
+- El f'c de p20 sale por rango; el valor 240 sin rango se descarta.
+- Los globos de eje (1-4 y A-D) salen con confianza alta. No hay falsos positivos en las hojas de detalle y ninguna "A" de apoyo se toma como eje.
+- Se detectaron 55 IDs y la nota de p19.
+
+**Hallazgo:** el lector encontró **7 notas de modificación**:
+- p7: muro de contención;
+- p11, p12 y p13: "SECCION AJUSTADA";
+- **p14: "CORRECCION EN DIMENSION DE COLUMNA: PASA DE 1.20M A 1.50M"**;
+- p19;
+- un fragmento suelto en p8.
+
+Todas deben ir a la Mesa de Dudas.
+
+**Observaciones**
+- Agregar las marcas `AJUSTAD`, `CORRECCION` y `CAMBIO DE`, y unir los fragmentos con su encabezado.
+- Globos de confianza "media" (llamadas numeradas con círculo): confirmarlos o exigir que estén en el margen de la planta.
+- Los títulos son solo candidatos; el nivel se decide con un patrón explícito o con la confirmación del usuario (T7n).
+- `_abrir` no cierra los documentos.
+
+**Pruebas:** `648 passed` + 1 fallo ajeno (#21).
