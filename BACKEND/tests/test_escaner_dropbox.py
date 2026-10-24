@@ -10,6 +10,7 @@ import builtins
 import io
 import json
 import os
+import re
 import pathlib
 from pathlib import Path
 
@@ -336,9 +337,17 @@ def test_terra_living_real():
     # D1: el plano sellado vigente (si cambia, hay que revisarlo a propósito)
     planos = {p["nombre"]: p["tamano_bytes"] for p in r["planos_sellados"]}
     assert planos.get(PLANO_SELLADO_TERRA) == 57_692_938
-    # D2: las 22 carpetas conocidas siguen ahí (pueden aparecer visitas nuevas)
-    assert set(VISITAS_TERRA_LIVING) <= set(_por_nombre(r))
-    assert _foto_arbol(carpeta / SUBRUTA_VISITAS) == antes
+    # D2: las 22 carpetas conocidas siguen ahí (siempre aparecen visitas nuevas: T12, nunca una cantidad exacta)
+    por_nombre = _por_nombre(r)
+    faltan = set(VISITAS_TERRA_LIVING) - set(por_nombre)
+    assert not faltan, f"faltan carpetas conocidas: {sorted(faltan)}"
+    assert len(por_nombre) >= len(VISITAS_TERRA_LIVING)
+    # Conocidas y nuevas se leen: el número del nombre es el de la interpretación y hay clase y fecha (o pendiente)
+    for nombre, visita in por_nombre.items():
+        numero = re.match(r"\d+", nombre)
+        assert numero and visita["interpretacion"]["numero"] == int(numero.group()), nombre
+        assert visita["interpretacion"]["clase"] and visita["interpretacion"]["fecha_ddmmaaaa"], nombre
+    assert _foto_arbol(carpeta / SUBRUTA_VISITAS) == antes  # el escaneo no escribe nada (ni toca fechas)
 
 
 @pytest.mark.skipif(not _real(*P16_REAL).is_dir(), reason="Dropbox real de P16 no disponible")

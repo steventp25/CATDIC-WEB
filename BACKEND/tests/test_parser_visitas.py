@@ -94,7 +94,10 @@ def test_carpeta_real_terra_living(nombre, numero, descripcion, clase, detalle, 
 
 
 def test_lista_coincide_con_dropbox_si_esta_disponible():
-    """Comprobación opcional, en solo lectura: los 22 nombres son los de la carpeta real."""
+    """
+    Comprobación opcional, en solo lectura. Siempre se suben visitas nuevas (T12): lo que se exige es que las 22
+    carpetas conocidas sigan en Dropbox y que cualquier carpeta nueva se lea sin error; no una lista exacta.
+    """
     config = pytest.importorskip("config")
     obtener_raiz = getattr(config, "obtener_dropbox_raiz", None)
     raiz = obtener_raiz() if obtener_raiz else Path(getattr(config, "DROPBOX_RAIZ", ""))
@@ -102,7 +105,19 @@ def test_lista_coincide_con_dropbox_si_esta_disponible():
     if not carpeta.is_dir():
         pytest.skip(f"Dropbox no disponible: {carpeta}")
     reales = sorted(e.name for e in os.scandir(carpeta) if e.is_dir())
-    assert reales == sorted(c[0] for c in CARPETAS_TERRA_LIVING)
+    conocidas = {c[0] for c in CARPETAS_TERRA_LIVING}
+    assert conocidas <= set(reales), f"faltan carpetas conocidas: {sorted(conocidas - set(reales))}"
+    for nueva in sorted(set(reales) - conocidas):  # carpetas subidas después: se leen sin error y con su nombre
+        r = interpretar_nombre_carpeta_visita(nueva)
+        assert r["nombre_original"] == nueva and isinstance(r["numero"], int)
+        assert sorted(r["motivos"]) == sorted(r["campos_pendientes"])  # lo que no se lee queda pendiente, con motivo
+
+
+def test_una_carpeta_conocida_que_falte_haria_fallar_la_comprobacion_contra_dropbox():
+    """La comprobación por subconjunto sigue detectando una carpeta conocida que desaparezca."""
+    conocidas = {c[0] for c in CARPETAS_TERRA_LIVING}
+    assert not conocidas <= (conocidas - {"20. LOSA SOTANO 3 PARCIAL 15-10-2026"})
+    assert conocidas <= (conocidas | {"21. VERTICALES S-2 PARCIAL 23-10-2026"})  # una nueva no estorba
 
 
 # ---- Ejemplos del plan (criterios de aceptación de T3) ----
