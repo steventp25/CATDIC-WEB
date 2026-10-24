@@ -29,8 +29,8 @@ def _png_caja() -> bytes:
 
 EXTRA_NO_MARCAR = {
     "FI-01": ["2a", "3a", "5a", "6a"],
-    "FI-02": ["3a", "8a", "8b", "9a", "9b"],  # 8-9: dinteles
-    "FI-03": ["3a", "8a", "8b", "9a", "9b"],  # 8: mampostería, 9: cerramiento y pandereta
+    "FI-02": ["3a", "8a", "8b", "8c", "8d", "9a", "9b", "9c", "9d"],  # 8-9: dinteles (solo si la visita los trae)
+    "FI-03": ["3a", "8a", "8b", "8c", "8d", "8e", "8f", "8g", "9a", "9b", "9c"],  # 8: mampostería; 9: cerramiento
 }
 
 
@@ -231,6 +231,59 @@ def test_marca_los_si_obligatorios_y_nunca_mamposteria_ni_dinteles_error_17(ento
     for pagina, y0, y1 in prohibidas_y:
         assert not [m for i, m in marcas if i == pagina and y0 - 3 < (m.y0 + m.y1) / 2 < y1 + 14 and m.x0 < 530]
     assert all(m.x0 < 530 for _, m in marcas)  # jamás una marca en "No"
+
+
+def _codigos_marcados(ruta: Path):
+    doc = pymupdf.open(str(ruta))
+    rotulos = [(i, s["bbox"][1], s["bbox"][3], re.match(r"^(\d{1,2}[a-z])\.", s["text"]).group(1))
+               for i, p in enumerate(doc) for b in p.get_text("dict")["blocks"] for l in b.get("lines", [])
+               for s in l["spans"] if s["bbox"][0] < 40 and re.match(r"^(\d{1,2}[a-z])\.", s["text"])]
+    doc.close()
+    codigos = set()
+    for i, m in _marcas(ruta):
+        for pagina, y0, y1, c in rotulos:
+            if pagina == i and y0 - 3 < (m.y0 + m.y1) / 2 < y1 + 14:
+                codigos.add(c)
+    return codigos
+
+
+FILAS_DINTELES = {"8a", "8b", "8c", "8d", "9a", "9b", "9c", "9d"}
+
+
+@pytest.mark.parametrize("elementos,esperadas", [
+    (["L1", "L2"], set()),
+    (["L1", "DINTEL D1"], FILAS_DINTELES),
+    (["Dinteles de la escalera", "V1"], FILAS_DINTELES),
+])
+def test_fi02_marca_dinteles_solo_si_la_visita_los_incluye(entorno, elementos, esperadas):
+    base = crear_fi(entorno / "FI-02.pdf", "FI-02", nivel=NIVEL, obs=["Anterior."])
+    r = _llamar(entorno, tipo="FI-02", existente=base, elementos=elementos)
+    assert r["ok"], r
+    codigos = _codigos_marcados(r["ruta"])
+    assert codigos & FILAS_DINTELES == esperadas
+    assert codigos >= FILAS_SI["FI-02"] and r["marcas"] == len(FILAS_SI["FI-02"]) + len(esperadas)
+    assert ("dinteles" in " ".join(r["avisos"])) == bool(esperadas)
+
+
+@pytest.mark.parametrize("elementos,esperadas", [
+    (["C1", "M2"], set()),
+    (["C1", "MURO DE CERRAMIENTO EJE 3"], {"9a", "9b", "9c"}),
+    (["Pandereta del eje A"], {"9a", "9b", "9c"}),
+    (["DINTEL D1"], set()),  # un dintel no activa el cerramiento del FI-03
+])
+def test_fi03_marca_cerramiento_solo_si_la_visita_lo_incluye_y_nunca_mamposteria(entorno, elementos, esperadas):
+    base = crear_fi(entorno / "FI-03.pdf", "FI-03", nivel=NIVEL, obs=["Anterior."])
+    r = _llamar(entorno, tipo="FI-03", existente=base, elementos=elementos)
+    assert r["ok"], r
+    codigos = _codigos_marcados(r["ruta"])
+    assert codigos & {"9a", "9b", "9c"} == esperadas
+    assert not codigos & {"8a", "8b", "8c", "8d", "8e", "8f", "8g"}  # MAMPOSTERÍA: nunca
+
+
+def test_fi01_no_marca_dinteles_ni_cerramiento_aunque_se_nombren(entorno):
+    base = crear_fi(entorno / "FI-01.pdf", "FI-01", nivel=NIVEL, obs=["Anterior."])
+    r = _llamar(entorno, tipo="FI-01", existente=base, elementos=["DINTEL D1", "MURO DE CERRAMIENTO"])
+    assert r["ok"] and r["marcas"] == len(FILAS_SI["FI-01"])
 
 
 def test_si_falta_una_fila_obligatoria_no_marca_a_ciegas(entorno):

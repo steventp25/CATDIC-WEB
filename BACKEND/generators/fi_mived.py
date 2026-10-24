@@ -29,7 +29,8 @@ GROSOR_MARCA = 1.5
 X_OBS_POR_DEFECTO = {"FI-01": 41.8, "FI-02": 26.8, "FI-03": 39.3}
 
 # Filas con "Sí" marcado en los FI llenados de ejemplo (T0b, parte 2; filas = código del rótulo). Nunca las de
-# mampostería (FI-03, secciones 8 y 9), nunca las de dinteles (FI-02, secciones 8 y 9) ni ninguna "No".
+# mampostería (FI-03, sección 8) ni ninguna "No". Las de dinteles (FI-02, secciones 8 y 9) y las de muros de
+# cerramiento/pandereta (FI-03, sección 9) solo se marcan si la visita trae un elemento de ese tipo (FILAS_SI_SI_HAY).
 FILAS_SI = {
     "FI-01": {"1a", "1b", "1c", "1d", "1e", "1f", "1g", "1h", "1i", "4a", "4c", "4d", "4e",
               "7a", "7b", "7c", "7d", "7e", "7f", "8a"},
@@ -37,6 +38,12 @@ FILAS_SI = {
               "7a", "7b", "7c", "7d", "7e", "11a", "11b", "11c", "11d", "11e", "11f", "12a"},
     "FI-03": {"1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "2d", "4a", "4b", "4c", "4d", "4e", "4f",
               "5a", "5c", "5d", "5e", "10a", "10b", "10c", "10d", "10e", "11a", "11b", "11c", "11d"},
+}
+
+# FI -> (patrón del nombre de elemento que activa las filas, filas). Steven: "solo cuando la visita lo incluye".
+FILAS_SI_SI_HAY = {
+    "FI-02": (re.compile(r"\bDINTEL(ES)?\b"), {"8a", "8b", "8c", "8d", "9a", "9b", "9c", "9d"}),
+    "FI-03": (re.compile(r"\b(MUROS? DE CERRAMIENTO|CERRAMIENTOS?|PANDERETAS?)\b"), {"9a", "9b", "9c"}),
 }
 
 # Campos de la cabecera de la hoja 1 (rótulo, clave de proyecto, lado, x del valor). Se localizan por su
@@ -376,16 +383,25 @@ def _escribir_fecha_autorizacion(doc, fecha: str, nombre_fuente, archivo_fuente)
     return None
 
 
-def _marcar_si(doc, tipo_fi: str) -> Tuple[int, List[str]]:
-    """Dibuja la marca 'Sí' (X de 12x12 pt) en las filas de FILAS_SI. Devuelve (marcas, filas no halladas)."""
-    pendientes = set(FILAS_SI[tipo_fi])
+def _filas_condicionales(tipo_fi: str, elementos: List[str]) -> set:
+    """Filas de dinteles / cerramiento que se marcan porque la lista de elementos trae uno de ese tipo."""
+    regla = FILAS_SI_SI_HAY.get(tipo_fi)
+    if regla and any(regla[0].search(_normalizar_texto(e)) for e in elementos):
+        return set(regla[1])
+    return set()
+
+
+def _marcar_si(doc, tipo_fi: str, extra=frozenset()) -> Tuple[int, List[str]]:
+    """Dibuja la marca 'Sí' (X de 12x12 pt) en las filas de FILAS_SI más `extra`. Devuelve (marcas, filas no halladas)."""
+    a_marcar = set(FILAS_SI[tipo_fi]) | set(extra)
+    pendientes = set(a_marcar)
     dibujadas = 0
     for page in doc:
         filas = _filas_si(page)
         xs = sorted(f["caja"].x0 for f in filas.values() if f["caja"] is not None)
         x_cajas = xs[len(xs) // 2] if xs else None  # mediana de las cajas de la hoja
         for codigo, fila in filas.items():
-            if codigo not in FILAS_SI[tipo_fi]:
+            if codigo not in a_marcar:
                 continue
             pendientes.discard(codigo)
             r = _rect_marca(fila, x_cajas)
@@ -500,7 +516,10 @@ def actualizar_fi(tipo_fi: str, proyecto: Dict, visita: Dict, nivel_txt: str, ni
         err = _escribir_fecha_autorizacion(doc, fecha, nombre_fuente, archivo_fuente)
         if err:
             return _error(res, err)
-        marcas, no_halladas = _marcar_si(doc, tipo_fi)
+        extra = _filas_condicionales(tipo_fi, elementos)
+        if extra:
+            res["avisos"].append(f"La visita trae dinteles/cerramiento: se marcan también las filas {', '.join(sorted(extra))}.")
+        marcas, no_halladas = _marcar_si(doc, tipo_fi, extra)
         if no_halladas:
             return _error(res, f"No se hallaron en el formulario las filas {', '.join(no_halladas)} "
                                f"({PENDIENTE}); no se marca nada a ciegas.")
