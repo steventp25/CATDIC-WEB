@@ -8,19 +8,22 @@
 #
 # Coordenadas: todas las bbox salen en el marco VISUAL de la página (con `rotation_matrix` aplicada, como en las
 # hojas giradas 270°); páginas numeradas desde 1.
+import functools
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pymupdf
 
-from reglas_ingenieria import PENDIENTE
+from reglas_ingenieria import PENDIENTE, _normalizar_texto
 
 TOLERANCIA_Y = 4.0           # pt: dos textos con centros a menos de esto están en la misma fila
 TOLERANCIA_X = 8.0           # pt de holgura de una celda respecto de la columna de su encabezado
 SALTO_MAXIMO_FILAS = 30.0    # pt: un hueco mayor entre filas termina la tabla
 
 _RE_NUMERO_HOJA = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
+_RE_TITULO_PLANTA = re.compile(r"^PLANTA (ESTRUCTURAL|EST\b|DE\b)")
 _RE_GLOBO = re.compile(r"^[A-Z0-9]{1,2}'?$")
 _RE_SECCION = re.compile(r"^S-?\d{1,2}'?(?:\s*/\s*S-?\d{1,2}'?)?$")
 IDS_EN_PLANTA = [  # (tipo, patrón del texto completo)
@@ -30,18 +33,26 @@ IDS_EN_PLANTA = [  # (tipo, patrón del texto completo)
     ("viga", re.compile(r"^V-?\s?\d{2,3}\s?[Xx]\s?\d{2,3}$")),
 ]
 MARCAS_DE_MODIFICACION = [  # (clave, patrón sobre el texto con espacios normalizados)
-    ("se_modifico", re.compile(r"\bSE MODIFIC[OÓ]\b", re.I)),
-    ("en_reemplazo", re.compile(r"\bEN REEMPLAZO\b", re.I)),
-    ("plano_anterior", re.compile(r"\bPLANO ANTERIOR\b", re.I)),
+    ("se_modifico", re.compile(r"\bSE MODIFICO\b")),
+    ("en_reemplazo", re.compile(r"\bEN REEMPLAZO\b")),
+    ("plano_anterior", re.compile(r"\bPLANO ANTERIOR\b")),
+    ("ajuste", re.compile(r"\bAJUSTAD[OA]S?\b|\bAJUSTE\b")),
+    ("correccion", re.compile(r"\bCORRECCION\b")),
+    ("cambio_de", re.compile(r"\bCAMBIO DE\b")),   # débil: también está en títulos de detalle ("CAMBIO DE SECCION")
 ]
 
 
 # ---------- Apertura y líneas ----------
 
-def _abrir(origen):
-    if isinstance(origen, pymupdf.Document):
-        return origen, Path(origen.name).name
-    return pymupdf.Document(str(origen)), Path(str(origen)).name
+def _con_documento(f):
+    """Las funciones públicas reciben una ruta o un `pymupdf.Document` ya abierto; si es una ruta se abre y se cierra aquí."""
+    @functools.wraps(f)
+    def envoltura(origen, *args, **kwargs):
+        if isinstance(origen, pymupdf.Document):
+            return f(origen, Path(origen.name).name, *args, **kwargs)
+        with pymupdf.Document(str(origen)) as doc:
+            return f(doc, Path(str(origen)).name, *args, **kwargs)
+    return envoltura
 
 
 def _rect(r) -> List[float]:
@@ -139,16 +150,18 @@ def _titulos(lineas: List[Dict], pagina: pymupdf.Rect, cajetin: Optional[pymupdf
         r = pymupdf.Rect(g[0]["rect"])
         for l in g[1:]:
             r |= l["rect"]
-        out.append({"texto": " ".join(" ".join(l["texto"].split()) for l in g), "bbox": _rect(r), "tam": g[0]["tam"]})
+        texto = " ".join(" ".join(l["texto"].split()) for l in g)
+        out.append({"texto": texto, "bbox": _rect(r), "tam": g[0]["tam"],
+                    "tipo": "planta" if _RE_TITULO_PLANTA.match(texto) else "otro"})  # el nivel NO se deduce aquí
     return sorted(out, key=lambda t: (t["bbox"][1], t["bbox"][0]))
 
 
-def indice_hojas(ruta) -> List[Dict]:
+@_con_documento
+def indice_hojas(doc, nombre) -> List[Dict]:
     """
     Una entrada por página: {pagina, rotacion, hoja (NN), total (/36), bbox_numero, titulos[], fuente}. El número
     sale del cajetín; si no se encuentra, `hoja` queda PENDIENTE (nunca se deduce del orden de las páginas).
     """
-    doc, nombre = _abrir(ruta)
     salida = []
     for p in doc:
         lineas = _lineas(p)
@@ -241,9 +254,9 @@ def _tabla_por_encabezado(lineas, ancla, encabezados, etiqueta_col, ancho_busque
             "avisos": avisos}
 
 
-def tabla_acero_losa(ruta, pagina: int) -> Optional[Dict]:
+@_con_documento
+def tabla_acero_losa(doc, nombre, pagina: int) -> Optional[Dict]:
     """'TABLA DE ACERO EN LOSA' (tipos A/B/C): H, Bw1, Bw2, h1, h2, acero inferior DIR. X / DIR. Y y AS. ADIC."""
-    doc, nombre = _abrir(ruta)
     lineas = _lineas(doc[pagina - 1])
     ancla = _buscar_ancla(lineas, re.compile(r"^TABLA DE ACERO EN LOSA$"))
     if ancla is None:
@@ -253,9 +266,9 @@ def tabla_acero_losa(ruta, pagina: int) -> Optional[Dict]:
     return {"tabla": "acero_en_losa", "fuente": _fuente(nombre, pagina, ancla["rect"], _hoja_de(doc, pagina)), **r}
 
 
-def tabla_zapata_lindero(ruta, pagina: int) -> Optional[Dict]:
+@_con_documento
+def tabla_zapata_lindero(doc, nombre, pagina: int) -> Optional[Dict]:
     """'TABLA DE APLICACION PARA ZAPATA DE MURO LINDERO': MURO, B, h, Df, ACERO Ast, ACERO Asl."""
-    doc, nombre = _abrir(ruta)
     lineas = _lineas(doc[pagina - 1])
     ancla = _buscar_ancla(lineas, re.compile(r"^TABLA DE APLICACION PARA$"))
     if ancla is None:
@@ -268,13 +281,13 @@ _RE_RANGO = re.compile(r"^(FUND\.?|E-?\d{1,2})\s*@\s*(E-?\d{1,2}|TECHO)$", re.I)
 _RE_FC = re.compile(r"^(\d{3})\s*Kg\s*/\s*cm\s*2?$", re.I)
 
 
-def tabla_fc_por_rango(ruta, pagina: int) -> Optional[Dict]:
+@_con_documento
+def tabla_fc_por_rango(doc, nombre, pagina: int) -> Optional[Dict]:
     """
     f'c por rango de entrepisos (`FUND.@ E3`, `E3 @ E10`…) anclado a 'CONCRETO F'c'. Cada fila une el rango y el
     valor SOLO si están en la misma fila (±4 pt); un valor sin rango (o al revés) queda pendiente. El rango se
     devuelve tal cual está escrito: no se expande ni se traduce a niveles.
     """
-    doc, nombre = _abrir(ruta)
     lineas = _lineas(doc[pagina - 1])
     ancla = _buscar_ancla(lineas, re.compile(r"^CONCRETO F['’]c$"))
     if ancla is None:
@@ -318,14 +331,19 @@ def _circulos(page) -> List[Dict]:
     return out
 
 
-def globos_de_eje(ruta, pagina: int) -> List[Dict]:
+@_con_documento
+def globos_de_eje(doc, nombre, pagina: int, exigir_linea_de_eje: bool = True) -> List[Dict]:
     """
+    (T6n-b) Criterio de margen: del globo de eje sale la línea del eje hacia la planta (un segmento de al menos 2
+    diámetros con un extremo en el borde del círculo); los círculos que están DENTRO del dibujo (llamadas 1, 2, 3)
+    no la tienen. Con `exigir_linea_de_eje=True` (por defecto) solo salen los grupos cuyos globos la tienen todos;
+    con False salen todos los grupos, con confianza "media" y `requiere_confirmacion=True`.
+
     Globos de eje de una planta: texto de 1-2 caracteres rodeado por un círculo vectorial, alineado con otros
     globos del mismo tamaño en una fila o una columna del margen, con rótulos TODOS DISTINTOS (una letra repetida
     en varios círculos —marcas de apoyo de la losa— no es un eje). Devuelve {texto, bbox, diametro, capa, orientacion,
     confianza, fuente}; confianza 'alta' si la capa del círculo es de ejes (nombre con "EJE"), 'media' si no.
     """
-    doc, nombre = _abrir(ruta)
     page = doc[pagina - 1]
     hoja = _hoja_de(doc, pagina)
     lineas = [l for l in _lineas(page) if _RE_GLOBO.match(l["texto"])]
@@ -345,13 +363,40 @@ def globos_de_eje(ruta, pagina: int) -> List[Dict]:
                 if len(grupo) >= 2 and len({o["texto"] for o in grupo}) == len(grupo):
                     for o in grupo:
                         elegidos[id(o)] = (o, orient)
+    segmentos = _segmentos_largos(page, 2 * min((o["rect"].width for o, _ in elegidos.values()), default=20.0))
+    for o, _ in elegidos.values():
+        o["con_linea"] = _tiene_linea_de_eje(o["rect"], segmentos)
+    grupos: Dict[Tuple[str, float], List] = {}
+    for o, orient in elegidos.values():  # un grupo = los globos de una misma fila o columna
+        clave = (orient, round((_centro_y(o["rect"]) if orient == "fila" else _centro_x(o["rect"])) / 3.0))
+        grupos.setdefault(clave, []).append((o, orient))
     out = []
-    for o, orient in sorted(elegidos.values(), key=lambda t: (t[1], t[0]["rect"].y0, t[0]["rect"].x0)):
-        out.append({"texto": o["texto"], "bbox": _rect(o["rect"]), "diametro": round(o["rect"].width, 1),
-                    "capa": o["capa"], "orientacion": orient,
-                    "confianza": "alta" if "EJE" in (o["capa"] or "").upper() else "media",
-                    "fuente": _fuente(nombre, pagina, o["rect"], hoja)})
+    for miembros in grupos.values():
+        completo = all(o["con_linea"] for o, _ in miembros)
+        if exigir_linea_de_eje and not completo:
+            continue
+        for o, orient in miembros:
+            seguro = completo and "EJE" in (o["capa"] or "").upper()
+            out.append({"texto": o["texto"], "bbox": _rect(o["rect"]), "diametro": round(o["rect"].width, 1),
+                        "capa": o["capa"], "orientacion": orient, "con_linea_de_eje": o["con_linea"],
+                        "confianza": "alta" if seguro else "media", "requiere_confirmacion": not seguro,
+                        "fuente": _fuente(nombre, pagina, o["rect"], hoja)})
+    return sorted(out, key=lambda g: (g["orientacion"], g["bbox"][1], g["bbox"][0]))
+
+
+def _segmentos_largos(page, largo_minimo: float) -> List[Tuple[pymupdf.Point, pymupdf.Point]]:
+    m = page.rotation_matrix
+    out = []
+    for d in page.get_drawings():
+        for it in d["items"]:
+            if it[0] == "l" and math.hypot(it[2].x - it[1].x, it[2].y - it[1].y) >= largo_minimo:
+                out.append((it[1] * m, it[2] * m))
     return out
+
+
+def _tiene_linea_de_eje(rect, segmentos) -> bool:
+    c, r = _centro_punto(rect), rect.width / 2
+    return any(abs(math.hypot(e.x - c.x, e.y - c.y) - r) <= 3.0 for a, b in segmentos for e in (a, b))
 
 
 def _centro_punto(r) -> pymupdf.Point:
@@ -360,9 +405,9 @@ def _centro_punto(r) -> pymupdf.Point:
 
 # ---------- 4. IDs en planta ----------
 
-def ids_en_planta(ruta, pagina: int) -> List[Dict]:
+@_con_documento
+def ids_en_planta(doc, nombre, pagina: int) -> List[Dict]:
     """IDs de elementos en planta (C#, L#, MH#, V-bxh) con su bbox. NO se asignan a un cruce de ejes."""
-    doc, nombre = _abrir(ruta)
     hoja = _hoja_de(doc, pagina)
     out = []
     for l in _lineas(doc[pagina - 1]):
@@ -377,19 +422,21 @@ def ids_en_planta(ruta, pagina: int) -> List[Dict]:
 
 # ---------- 5. Notas de modificación ----------
 
-def notas_de_modificacion(ruta, pagina: int) -> List[Dict]:
+@_con_documento
+def notas_de_modificacion(doc, nombre, pagina: int) -> List[Dict]:
     """
     Une las líneas contiguas de cada párrafo (mismo tamaño, misma esquina izquierda, interlineado normal) y marca los
     que dicen 'SE MODIFICO', 'EN REEMPLAZO' o 'PLANO ANTERIOR': candidatos a duda, nunca datos.
     """
-    doc, nombre = _abrir(ruta)
     hoja = _hoja_de(doc, pagina)
     lineas = sorted(_lineas(doc[pagina - 1]), key=lambda l: (round(l["rect"].x0 / 8), l["rect"].y0))
+    lineas.sort(key=lambda l: l["rect"].y0)  # de arriba abajo: cada línea se une al párrafo que la precede
     parrafos: List[List[Dict]] = []
     for l in lineas:
         for g in parrafos:
             u = g[-1]
-            if (abs(u["tam"] - l["tam"]) < 0.6 and abs(u["rect"].x0 - l["rect"].x0) < 6
+            if (abs(u["tam"] - l["tam"]) < 0.6
+                    and (abs(u["rect"].x0 - l["rect"].x0) < 6 or abs(_centro_x(u["rect"]) - _centro_x(l["rect"])) < 6)  # a la izquierda o centrado
                     and -0.6 * l["tam"] <= l["rect"].y0 - u["rect"].y1 < 0.9 * l["tam"]):
                 g.append(l)
                 break
@@ -398,21 +445,22 @@ def notas_de_modificacion(ruta, pagina: int) -> List[Dict]:
     out = []
     for g in parrafos:
         texto = " ".join(" ".join(l["texto"].split()) for l in g)
-        claves = [k for k, p in MARCAS_DE_MODIFICACION if p.search(texto)]
+        claves = [k for k, p in MARCAS_DE_MODIFICACION if p.search(_normalizar_texto(texto))]
         if claves:
             r = pymupdf.Rect(g[0]["rect"])
             for l in g[1:]:
                 r |= l["rect"]
             out.append({"texto": texto, "claves": claves, "lineas": len(g), "bbox": _rect(r),
+                        "confianza": "baja" if claves == ["cambio_de"] else "alta",
                         "fuente": _fuente(nombre, pagina, r, hoja)})
     return out
 
 
 # ---------- 6. Rótulos S-1 / S-2 ----------
 
-def rotulos_de_seccion(ruta, pagina: int) -> List[Dict]:
+@_con_documento
+def rotulos_de_seccion(doc, nombre, pagina: int) -> List[Dict]:
     """Rótulos S-1, S-2…: su clave lleva la hoja ('26:S-1') porque el mismo S-1 se repite con otro sentido en cada hoja."""
-    doc, nombre = _abrir(ruta)
     hoja = _hoja_de(doc, pagina)
     out = []
     for l in _lineas(doc[pagina - 1]):

@@ -169,18 +169,22 @@ def test_pagina_sin_la_tabla_devuelve_none(tmp_path):
 
 # ---------- Globos de eje ----------
 
-def _globo(pag, cx, cy, t, r=9.5):
+def _globo(pag, cx, cy, t, r=9.5, linea=None):
+    """Globo; `linea` = (dx, dy) unitario hacia donde sale la línea del eje (56 pt), como en los planos reales."""
     pag.draw_circle((cx, cy), r, color=(0, 0, 0), width=0.7)
     pag.insert_text((cx - 3 * len(t), cy + 3), t, fontsize=9)
+    if linea:
+        pag.draw_line((cx + linea[0] * r, cy + linea[1] * r), (cx + linea[0] * (r + 56), cy + linea[1] * (r + 56)),
+                      color=(0, 0, 0), width=0.7)
 
 
 def test_globos_de_eje_solo_circulos_alineados_con_rotulos_distintos(tmp_path):
     doc = pymupdf.open()
     pag = doc.new_page(width=1200, height=900)
-    for i, t in enumerate(["A", "B", "C", "D"]):   # fila de letras abajo
-        _globo(pag, 300 + 120 * i, 850, t)
+    for i, t in enumerate(["A", "B", "C", "D"]):   # fila de letras abajo, con su línea de eje hacia la planta
+        _globo(pag, 300 + 120 * i, 850, t, linea=(0, -1))
     for i, t in enumerate(["1", "2", "3"]):        # columna de números a la izquierda
-        _globo(pag, 100, 300 + 130 * i, t)
+        _globo(pag, 100, 300 + 130 * i, t, linea=(1, 0))
     for x in (400, 520, 640):                      # marcas de apoyo: la MISMA "A" en círculos más chicos, alineadas
         _globo(pag, x, 200, "A", r=7.6)
     pag.insert_text((700, 500), "A", fontsize=9)   # una "A" suelta, sin círculo
@@ -191,7 +195,24 @@ def test_globos_de_eje_solo_circulos_alineados_con_rotulos_distintos(tmp_path):
     assert sorted(x["texto"] for x in g if x["orientacion"] == "fila") == ["A", "B", "C", "D"]
     assert sorted(x["texto"] for x in g if x["orientacion"] == "columna") == ["1", "2", "3"]
     assert len(g) == 7 and all(x["diametro"] == 19.0 for x in g)   # ninguna "A" de apoyo, ninguna suelta, ningún L#
-    assert all(x["confianza"] == "media" and x["fuente"]["pagina"] == 1 for x in g)  # capa sin nombre "EJE"
+    assert all(x["confianza"] == "media" and x["requiere_confirmacion"] and x["con_linea_de_eje"]
+               for x in g)  # capa sin nombre "EJE": se pide confirmar
+    assert all(x["fuente"]["pagina"] == 1 for x in g)
+
+
+def test_llamadas_1_2_3_circuladas_dentro_del_dibujo_no_salen_como_eje(tmp_path):
+    doc = pymupdf.open()
+    pag = doc.new_page(width=1200, height=900)
+    for i, t in enumerate(["A", "B"]):             # los ejes reales, con línea
+        _globo(pag, 300 + 120 * i, 850, t, linea=(0, -1))
+    for i, t in enumerate(["1", "2", "3"]):        # llamadas de un detalle: circuladas, alineadas, rótulos distintos, SIN línea
+        _globo(pag, 500 + 90 * i, 400, t)
+    ruta = _guardar(doc, tmp_path / "c.pdf")
+    assert sorted(x["texto"] for x in lp.globos_de_eje(ruta, 1)) == ["A", "B"]
+    todos = lp.globos_de_eje(ruta, 1, exigir_linea_de_eje=False)   # modo permisivo: salen, pero a confirmar
+    llamadas = [x for x in todos if x["texto"] in "123"]
+    assert len(llamadas) == 3 and all(x["confianza"] == "media" and x["requiere_confirmacion"]
+                                      and not x["con_linea_de_eje"] for x in llamadas)
 
 
 def test_una_letra_repetida_en_circulos_alineados_no_es_un_eje(tmp_path):
@@ -228,6 +249,63 @@ def test_nota_de_modificacion_partida_en_tres_lineas_se_une_y_se_detecta(tmp_pat
     assert len(n) == 1 and n[0]["lineas"] == 3
     assert set(n[0]["claves"]) == {"se_modifico", "en_reemplazo", "plano_anterior"}
     assert "SE MODIFICO, SUSTITUYENDO" in n[0]["texto"] and n[0]["fuente"]["pagina"] == 1
+
+
+@pytest.mark.parametrize("texto,clave", [
+    ("PLANTA AJUSTADA PARA INCORPORAR EL MURO", "ajuste"),
+    ("SECCION AJUSTADA DE ACUERDO AL NUEVO DISEÑO", "ajuste"),
+    ("CORRECCIÓN EN DIMENSION DE COLUMNA: PASA DE 1.20M A 1.50M", "correccion"),
+    ("DETALLE DEL CAMBIO DE LOSA EN EL NIVEL", "cambio_de"),
+])
+def test_notas_con_las_marcas_ajustad_correccion_y_cambio_de(tmp_path, texto, clave):
+    doc = pymupdf.open()
+    pag = doc.new_page(width=800, height=600)
+    _texto(pag, 100, 100, texto, 10)
+    n = lp.notas_de_modificacion(_guardar(doc, tmp_path / "n.pdf"), 1)
+    assert len(n) == 1 and clave in n[0]["claves"]
+    assert n[0]["confianza"] == ("baja" if n[0]["claves"] == ["cambio_de"] else "alta")
+
+
+def test_fragmento_centrado_se_une_con_su_parrafo(tmp_path):
+    """Como la nota de la p. 8 del plano real: líneas CENTRADAS (distinta x0), la marca en la 3.ª línea."""
+    doc = pymupdf.open()
+    pag = doc.new_page(width=800, height=600)
+    lineas = ["NOTA ESTRUCTURAL:", "AJUSTE DE INDICACION ESPESOR DE", "MURO DE CONTENCION ATENDIENDO A",
+              "PLANO ANTERIOR CON LICENCIA", "[LICENCIA]"]
+    for i, l in enumerate(lineas):
+        ancho = pymupdf.get_text_length(l, fontsize=10)
+        _texto(pag, 400 - ancho / 2, 100 + 11 * i, l, 10)
+    n = lp.notas_de_modificacion(_guardar(doc, tmp_path / "c.pdf"), 1)
+    assert len(n) == 1 and n[0]["lineas"] == 5
+    assert n[0]["texto"].startswith("NOTA ESTRUCTURAL: AJUSTE DE INDICACION") and "plano_anterior" in n[0]["claves"]
+
+
+def test_titulos_con_tipo_planta_u_otro_sin_deducir_el_nivel(tmp_path):
+    doc = pymupdf.open()
+    pag = doc.new_page(width=1200, height=800)
+    for i, t in enumerate(["PLANTA ESTRUCTURAL NIVEL 2", "PLANTA DE TECHO ESTRUCTURAL", "PLANTA EST DE FUNDACIONES ACERO",
+                           "SECCION DE FUNDACIONES A-A'", "DETALLE DE CISTERNA"]):
+        _texto(pag, 100, 100 + 60 * i, t, 15)
+    h = lp.indice_hojas(_guardar(doc, tmp_path / "t.pdf"))[0]
+    tipos = {t["texto"]: t["tipo"] for t in h["titulos"]}
+    assert tipos == {"PLANTA ESTRUCTURAL NIVEL 2": "planta", "PLANTA DE TECHO ESTRUCTURAL": "planta",
+                     "PLANTA EST DE FUNDACIONES ACERO": "planta", "SECCION DE FUNDACIONES A-A'": "otro",
+                     "DETALLE DE CISTERNA": "otro"}
+    assert all("nivel" not in t for t in h["titulos"])
+
+
+def test_se_acepta_un_documento_abierto_y_con_ruta_se_cierra_el_archivo(tmp_path):
+    doc = pymupdf.open()
+    pag = doc.new_page(width=600, height=400)
+    _texto(pag, 500, 380, "01", 14)
+    _texto(pag, 516, 380, "/36", 14)
+    ruta = _guardar(doc, tmp_path / "a.pdf")
+    abierto = pymupdf.open(str(ruta))
+    assert lp.indice_hojas(abierto)[0]["hoja"] == "01"
+    assert not abierto.is_closed                       # un documento ya abierto se reutiliza y no se cierra
+    abierto.close()
+    assert lp.indice_hojas(ruta)[0]["hoja"] == "01"
+    ruta.unlink()                                      # en Windows solo se puede borrar si la función cerró el archivo
 
 
 def test_rotulos_de_seccion_llevan_la_hoja_en_su_clave(tmp_path):
