@@ -352,26 +352,25 @@ def globos_de_eje(doc, nombre, pagina: int, exigir_linea_de_eje: bool = True) ->
         dentro = [l for l in lineas if c["rect"].contains(_centro_punto(l["rect"]))]
         if len(dentro) == 1:
             cand.append({**c, "texto": dentro[0]["texto"]})
-    elegidos = {}
+    # Una fila (o columna) = una sola unidad: se agrupa por cadena (centros a ≤ 3 pt del vecino) y del mismo diámetro,
+    # sin cubetas fijas que partan una misma alineación; después se verifica la línea de eje del grupo COMPLETO.
+    grupos_alineados: List[Tuple[str, List[Dict]]] = []
     for orient, centro in (("fila", _centro_y), ("columna", _centro_x)):
         for clase in ("letra", "numero"):  # un eje se rotula con letras o con números, no mezclados
             propios = [c for c in cand if (c["texto"].rstrip("'").isalpha() if clase == "letra"
                                            else c["texto"].rstrip("'").isdigit())]
-            for c in propios:
-                grupo = [o for o in propios if abs(centro(o["rect"]) - centro(c["rect"])) <= 3.0
-                         and abs(o["rect"].width - c["rect"].width) <= 1.5]
-                if len(grupo) >= 2 and len({o["texto"] for o in grupo}) == len(grupo):
-                    for o in grupo:
-                        elegidos[id(o)] = (o, orient)
-    segmentos = _segmentos_largos(page, 2 * min((o["rect"].width for o, _ in elegidos.values()), default=20.0))
-    for o, _ in elegidos.values():
-        o["con_linea"] = _tiene_linea_de_eje(o["rect"], segmentos)
-    grupos: Dict[Tuple[str, float], List] = {}
-    for o, orient in elegidos.values():  # un grupo = los globos de una misma fila o columna
-        clave = (orient, round((_centro_y(o["rect"]) if orient == "fila" else _centro_x(o["rect"])) / 3.0))
-        grupos.setdefault(clave, []).append((o, orient))
+            for por_diametro in _cadenas(propios, lambda o: o["rect"].width, 1.5):
+                for grupo in _cadenas(por_diametro, lambda o: centro(o["rect"]), 3.0):
+                    if len(grupo) >= 2 and len({o["texto"] for o in grupo}) == len(grupo):
+                        grupos_alineados.append((orient, grupo))
+    segmentos = _segmentos_largos(page, 2 * min((o["rect"].width for _, g in grupos_alineados for o in g), default=20.0))
+    grupos = []
+    for orient, grupo in grupos_alineados:
+        for o in grupo:
+            o["con_linea"] = _tiene_linea_de_eje(o["rect"], segmentos)
+        grupos.append([(o, orient) for o in grupo])
     out = []
-    for miembros in grupos.values():
+    for miembros in grupos:
         completo = all(o["con_linea"] for o, _ in miembros)
         if exigir_linea_de_eje and not completo:
             continue
@@ -382,6 +381,17 @@ def globos_de_eje(doc, nombre, pagina: int, exigir_linea_de_eje: bool = True) ->
                         "confianza": "alta" if seguro else "media", "requiere_confirmacion": not seguro,
                         "fuente": _fuente(nombre, pagina, o["rect"], hoja)})
     return sorted(out, key=lambda g: (g["orientacion"], g["bbox"][1], g["bbox"][0]))
+
+
+def _cadenas(items: List[Dict], valor, tolerancia: float) -> List[List[Dict]]:
+    """Agrupa por cadena: ordenados por `valor`, dos vecinos a ≤ tolerancia son del mismo grupo (sin cubetas fijas)."""
+    grupos: List[List[Dict]] = []
+    for o in sorted(items, key=valor):
+        if grupos and valor(o) - valor(grupos[-1][-1]) <= tolerancia:
+            grupos[-1].append(o)
+        else:
+            grupos.append([o])
+    return grupos
 
 
 def _segmentos_largos(page, largo_minimo: float) -> List[Tuple[pymupdf.Point, pymupdf.Point]]:

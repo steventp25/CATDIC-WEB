@@ -215,6 +215,19 @@ def test_llamadas_1_2_3_circuladas_dentro_del_dibujo_no_salen_como_eje(tmp_path)
                                       and not x["con_linea_de_eje"] for x in llamadas)
 
 
+def test_una_fila_alineada_se_evalua_como_un_solo_grupo_aunque_cruce_el_limite_de_cubeta(tmp_path):
+    """Centros a ambos lados de 1.5 / 4.5 pt (límites de cubeta de 3 pt): la fila sigue siendo UN grupo, y si a
+    uno de sus globos le falta la línea de eje no sale ninguno."""
+    doc = pymupdf.open()
+    pag = doc.new_page(width=1200, height=900)
+    for x, t, y, linea in ((300, "A", 850.0, (0, -1)), (420, "B", 851.4, (0, -1)), (540, "C", 852.6, None)):
+        _globo(pag, x, y, t, linea=linea)            # C sin línea: el grupo A-B-C no está completo
+    ruta = _guardar(doc, tmp_path / "cubeta.pdf")
+    assert lp.globos_de_eje(ruta, 1) == []           # antes salían A y B (subgrupo con línea)
+    todos = lp.globos_de_eje(ruta, 1, exigir_linea_de_eje=False)
+    assert sorted(x["texto"] for x in todos) == ["A", "B", "C"] and all(x["requiere_confirmacion"] for x in todos)
+
+
 def test_una_letra_repetida_en_circulos_alineados_no_es_un_eje(tmp_path):
     doc = pymupdf.open()
     pag = doc.new_page(width=800, height=600)
