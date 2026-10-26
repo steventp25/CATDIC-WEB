@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
+from obras import planos_vigentes, router as router_obras
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
 RUTA_FRONTEND = Path(__file__).resolve().parent.parent / "FRONTEND"
@@ -51,6 +52,7 @@ class ProyectoUpdate(BaseModel):
     direccion_obra: Optional[str] = None
     provincia: Optional[str] = None
     sector: Optional[str] = None
+    inicio_obra: Optional[str] = None  # Etapa 2 · T4n
 
 
 # --- ENDPOINTS API ---
@@ -81,6 +83,7 @@ def obtener_dashboard():
         "proyectos": proyectos,
         "visitas": visitas,
         "ordenes": ot,
+        "planos_vigentes": planos_vigentes(),   # Etapa 2 · T4n: resumen del plano vigente de cada obra
     }
 
 
@@ -139,6 +142,9 @@ MENSAJE_PROCESAR_COLA_DESACTIVADO = (
 def procesar_cola():
     """Desactivado (Etapa 1 · T9): se conectará a los generadores en la Etapa 3. No toca la BD."""
     raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
+
+
+app.include_router(router_obras)  # Etapa 2 · T4n: crear obra, planos y datos del usuario
 
 
 # Se monta al final para que /api/* conserve prioridad. Un solo servidor local entrega

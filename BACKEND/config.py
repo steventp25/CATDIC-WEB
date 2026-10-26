@@ -37,3 +37,27 @@ def obtener_salida_pruebas() -> Path:
     """Carpeta donde los generadores escriben mientras se prueban (nunca Dropbox, P3)."""
     valor = os.environ.get(ENV_SALIDA_PRUEBAS, "").strip()
     return Path(valor) if valor else Path.home() / "CATDIC-SALIDA-PRUEBAS"
+
+
+# Etapa 2 · T4n: carpeta local de las obras (planos subidos, visitas subidas). Nada fijo al usuario ni en Dropbox:
+# variable de entorno CATDIC_DATOS_RAIZ o, si no existe, <carpeta del usuario>\CATDIC-DATOS.
+ENV_DATOS_RAIZ = "CATDIC_DATOS_RAIZ"
+
+
+class CarpetaDatosInvalida(ValueError):
+    """La carpeta de datos cae dentro de Dropbox o del repositorio."""
+
+
+def obtener_datos_raiz() -> Path:
+    """Carpeta de datos de las obras. Se rechaza si cae dentro de Dropbox o del repositorio (git)."""
+    valor = os.environ.get(ENV_DATOS_RAIZ, "").strip()
+    raiz = (Path(valor) if valor else Path.home() / "CATDIC-DATOS").resolve()
+    repo = Path(__file__).resolve().parent.parent
+    dropbox = obtener_dropbox_raiz().resolve()
+    for prohibida, nombre in ((dropbox, "Dropbox"), (repo, "el repositorio")):
+        if raiz == prohibida or prohibida in raiz.parents:
+            raise CarpetaDatosInvalida(
+                f"La carpeta de datos '{raiz}' está dentro de {nombre}; define CATDIC_DATOS_RAIZ en otra ubicación.")
+    if any("dropbox" in parte.lower() for parte in raiz.parts):
+        raise CarpetaDatosInvalida(f"La carpeta de datos '{raiz}' parece estar dentro de Dropbox; usa otra ubicación.")
+    return raiz

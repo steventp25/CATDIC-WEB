@@ -83,7 +83,8 @@ def inicializar_bd():
         actualizado TEXT NOT NULL,
         direccion_obra TEXT DEFAULT '',      -- Etapa 3 · T7a: datos de cabecera de los informes
         provincia TEXT DEFAULT '',
-        sector TEXT DEFAULT ''
+        sector TEXT DEFAULT '',
+        inicio_obra TEXT DEFAULT ''          -- Etapa 2 · T4n: inicio de obra (DD/MM/AAAA)
     );
     """)
 
@@ -105,6 +106,8 @@ def inicializar_bd():
         actualizado TEXT NOT NULL,
         fuente_json TEXT DEFAULT '{}',       -- Etapa 2 · T1: documento fuente, sección/línea y SHA-256
         pendientes_json TEXT DEFAULT '[]',   -- Etapa 2 · T1: campos 'pendiente de verificar'
+        plano_id INTEGER,                    -- Etapa 2 · T4n: plano (tabla planos) del que se extrajo
+        revisar_motivo TEXT DEFAULT '',      -- Etapa 2 · T4n: 'plano cambiado: revisar' si el plano se reemplazó
         UNIQUE(proyecto_id, id_elemento, nivel_rango, ejes)
     );
     """)
@@ -181,6 +184,51 @@ def inicializar_bd():
     );
     """)
 
+    # 8. PLANOS DE LA OBRA (Etapa 2 · T4n): vectorial (fuente de lectura) + sellado (referencia legal), con histórico
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS planos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,           -- 1, 2, 3… por obra
+        etiqueta_revision TEXT DEFAULT '',   -- texto libre del usuario (p. ej. 'Rev. marzo 2026')
+        fecha_plano TEXT DEFAULT '',         -- DD/MM/AAAA, la escribe el usuario (opcional)
+        estado TEXT NOT NULL CHECK(estado IN ('vigente', 'historico')),
+        vectorial_archivo TEXT NOT NULL,
+        vectorial_ruta TEXT NOT NULL,
+        vectorial_sha256 TEXT NOT NULL,
+        vectorial_bytes INTEGER NOT NULL,
+        vectorial_paginas INTEGER NOT NULL,
+        sellado_archivo TEXT NOT NULL,
+        sellado_ruta TEXT NOT NULL,
+        sellado_sha256 TEXT NOT NULL,
+        sellado_bytes INTEGER NOT NULL,
+        sellado_paginas INTEGER NOT NULL,
+        certificado_por TEXT NOT NULL,       -- el usuario que certifica que el vectorial corresponde al sellado
+        certificado_en TEXT NOT NULL,
+        certificacion_texto TEXT NOT NULL,
+        notas TEXT DEFAULT '',
+        subido_en TEXT NOT NULL,
+        UNIQUE(proyecto_id, revision)
+    );
+    """)
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_planos_vigente ON planos(proyecto_id) WHERE estado = 'vigente';")
+
+    # 9. DATOS QUE EL PLANO NO DA y escribe el usuario (T3n): E-n ↔ nivel, L# → tipo, emparejamiento de hojas, techos
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS obra_datos_usuario (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        tipo TEXT NOT NULL CHECK(tipo IN ('equivalencia_nivel', 'losa_tipo', 'hoja_par', 'techo')),
+        clave TEXT NOT NULL,                 -- 'E-1', 'L13', página del vectorial, hoja de techo
+        valor TEXT NOT NULL,
+        estado TEXT NOT NULL CHECK(estado IN ('confirmado', 'pendiente de verificar')),
+        fuente TEXT NOT NULL DEFAULT 'usuario',
+        actualizado_por TEXT NOT NULL,
+        actualizado TEXT NOT NULL,
+        UNIQUE(proyecto_id, tipo, clave)
+    );
+    """)
+
     conn.commit()
     conn.close()
 
@@ -189,6 +237,7 @@ def inicializar_bd():
     agregar_columna_origen_visitas()
     migrar_elementos_diseno()
     migrar_proyectos_cabecera()
+    migrar_columnas_t4n()
 
 # ---------- Migración de 'visitas' (Etapa 1 · T2) ----------
 
@@ -444,6 +493,52 @@ def migrar_proyectos_cabecera() -> dict:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_PROYECTOS_CABECERA",
                   "proyectos", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
+    finally:
+        conn.close()
+
+# ---------- Migración (Etapa 2 · T4n): inicio_obra, plano_id y revisar_motivo ----------
+COLUMNAS_T4N = {  # tabla -> {columna: definición}
+    "proyectos": {"inicio_obra": "TEXT DEFAULT ''"},
+    "elementos_diseno": {"plano_id": "INTEGER", "revisar_motivo": "TEXT DEFAULT ''"},
+}
+
+def migrar_columnas_t4n() -> dict:
+    """
+    Añade con ALTER TABLE ADD COLUMN (no destructivo) proyectos.inicio_obra y elementos_diseno.plano_id /
+    revisar_motivo. Idempotente; respalda la BD antes y audita en la misma transacción. No toca ninguna fila.
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        faltan = {}
+        for tabla, columnas in COLUMNAS_T4N.items():
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabla,)).fetchone():
+                continue
+            existentes = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+            pendientes = {c: d for c, d in columnas.items() if c not in existentes}
+            if pendientes:
+                faltan[tabla] = pendientes
+        if not faltan:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for tabla, columnas in faltan.items():
+                for c, definicion in columnas.items():
+                    conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {c} {definicion}")
+            detalle = {"respaldo": respaldo.name, "columnas_nuevas": {t: list(c) for t, c in faltan.items()}}
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_COLUMNAS_T4N",
+                  "proyectos,elementos_diseno", json.dumps(detalle, ensure_ascii=False)))
             conn.execute("COMMIT")
         except Exception:
             if conn.in_transaction:

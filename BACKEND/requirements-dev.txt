@@ -3,3 +3,5 @@
 pytest>=9.1
 # Requerido por fastapi.testclient para probar endpoints
 httpx>=0.28.1
+# Etapa 2 · T4n: subida de planos (multipart) con FastAPI
+python-multipart>=0.0.32
