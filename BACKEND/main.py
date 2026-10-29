@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
+from mesa_dudas import router as router_mesa_dudas
 from obras import planos_vigentes, router as router_obras
 from visor import router as router_visor
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
@@ -145,6 +146,7 @@ def procesar_cola():
     raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
 
 
+app.include_router(router_mesa_dudas)
 app.include_router(router_obras)  # Etapa 2 · T4n: crear obra, planos y datos del usuario
 app.include_router(router_visor)  # Etapa 2 · T5n: visor del vectorial y recuadros
 
