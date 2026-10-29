@@ -2,6 +2,7 @@
 # Etapa 3 · T7 — Generador STP-MIVED (PLANES/etapa-3.md, T7; CLAUDE.md §3.2, §4.5–§4.7, §5.2).
 # Todo # SINTÉTICO: proyecto, visita, planos y fotos se crean en la prueba; no se usa ningún dato real.
 import copy
+import functools
 import io
 import re
 from pathlib import Path
@@ -121,8 +122,21 @@ def mundo(tmp_path_factory):
     return Mundo(tmp_path_factory.mktemp("mundo"))
 
 
+@functools.lru_cache(maxsize=1)
+def _chromium_disponible() -> bool:
+    """El STP se renderiza con Chromium de Playwright; en una máquina sin él esas pruebas se saltan, no fallan."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            return Path(p.chromium.executable_path).exists()
+    except Exception:  # noqa: BLE001 — sin playwright o sin navegador instalado
+        return False
+
+
 @pytest.fixture
 def entorno(tmp_path, monkeypatch):
+    if not _chromium_disponible():
+        pytest.skip("Chromium de Playwright no está instalado en esta máquina (python -m playwright install chromium)")
     (tmp_path / "bd").mkdir()
     monkeypatch.setenv(config.ENV_DB_PATH, str(tmp_path / "bd" / "prueba.db"))
     monkeypatch.setenv(config.ENV_DROPBOX_RAIZ, str(tmp_path / "dropbox"))

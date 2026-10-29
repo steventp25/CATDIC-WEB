@@ -48,16 +48,30 @@ class CarpetaDatosInvalida(ValueError):
     """La carpeta de datos cae dentro de Dropbox o del repositorio."""
 
 
-def obtener_datos_raiz() -> Path:
-    """Carpeta de datos de las obras. Se rechaza si cae dentro de Dropbox o del repositorio (git)."""
-    valor = os.environ.get(ENV_DATOS_RAIZ, "").strip()
-    raiz = (Path(valor) if valor else Path.home() / "CATDIC-DATOS").resolve()
+def _carpeta_local_valida(valor_env: str, por_defecto: str, variable: str, que: str) -> Path:
+    """Resuelve una carpeta local y la rechaza si cae dentro de Dropbox o del repositorio (git)."""
+    valor = os.environ.get(valor_env, "").strip()
+    raiz = (Path(valor) if valor else Path.home() / por_defecto).resolve()
     repo = Path(__file__).resolve().parent.parent
     dropbox = obtener_dropbox_raiz().resolve()
     for prohibida, nombre in ((dropbox, "Dropbox"), (repo, "el repositorio")):
         if raiz == prohibida or prohibida in raiz.parents:
             raise CarpetaDatosInvalida(
-                f"La carpeta de datos '{raiz}' está dentro de {nombre}; define CATDIC_DATOS_RAIZ en otra ubicación.")
+                f"La carpeta {que} '{raiz}' está dentro de {nombre}; define {variable} en otra ubicación.")
     if any("dropbox" in parte.lower() for parte in raiz.parts):
-        raise CarpetaDatosInvalida(f"La carpeta de datos '{raiz}' parece estar dentro de Dropbox; usa otra ubicación.")
+        raise CarpetaDatosInvalida(f"La carpeta {que} '{raiz}' parece estar dentro de Dropbox; usa otra ubicación.")
     return raiz
+
+
+def obtener_datos_raiz() -> Path:
+    """Carpeta de datos de las obras. Se rechaza si cae dentro de Dropbox o del repositorio (git)."""
+    return _carpeta_local_valida(ENV_DATOS_RAIZ, "CATDIC-DATOS", ENV_DATOS_RAIZ, "de datos")
+
+
+# Etapa 2 · T5n: caché local de las páginas rasterizadas del visor (prescindible: se puede borrar). Misma regla.
+ENV_CACHE_RAIZ = "CATDIC_CACHE_RAIZ"
+
+
+def obtener_cache_raiz() -> Path:
+    """Caché de imágenes del visor: CATDIC_CACHE_RAIZ o <carpeta del usuario>/CATDIC-CACHE; nunca Dropbox ni el repo."""
+    return _carpeta_local_valida(ENV_CACHE_RAIZ, "CATDIC-CACHE", ENV_CACHE_RAIZ, "de caché")

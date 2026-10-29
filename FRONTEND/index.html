@@ -170,6 +170,7 @@
                                         <span v-else class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">sin plano</span>
                                         <span class="flex gap-2 mt-1.5">
                                             <button @click="abrirCambiarPlano(p)" :data-cambiar-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">{{ planosVigentes[p.id] ? 'Cambiar plano' : 'Subir planos' }}</button>
+                                            <button v-if="planosVigentes[p.id]" @click="abrirVisor(p)" :data-ver-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Ver plano</button>
                                             <button @click="abrirDatosObra(p)" :data-datos-obra="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Datos de la obra</button>
                                         </span>
                                     </td>
@@ -318,6 +319,67 @@
         </div>
     </div>
 
+    <!-- MODAL: VISOR DEL VECTORIAL Y RECUADROS (Etapa 2 · T5n) -->
+    <div v-if="visor" class="fixed inset-0 bg-black/80 z-50 flex flex-col p-4" data-visor>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl flex flex-col flex-1 min-h-0">
+            <div class="px-5 py-3 border-b border-[#29292e] flex flex-wrap items-center gap-3 text-sm">
+                <h3 class="font-bold text-white mr-2"><i class="fa-solid fa-magnifying-glass-plus mr-2 text-yellow-400"></i>Visor · {{ visor.nombre }} <span class="text-xs text-gray-400 font-normal">(plano vectorial vigente)</span></h3>
+                <select v-model.number="visor.pagina" @change="cargarHoja" data-visor-hoja class="bg-[#121214] border border-[#29292e] rounded px-2 py-1 text-white max-w-xs">
+                    <option v-for="h in visor.hojas" :key="h.pagina" :value="h.pagina">p{{ h.pagina }} · hoja {{ h.hoja }} · {{ (h.titulos[0] || '').slice(0, 40) }}</option>
+                </select>
+                <span class="text-gray-400">Zoom</span>
+                <button @click="zoomVisor(0.8)" class="bg-[#29292e] px-2 py-1 rounded" data-zoom-menos>−</button>
+                <span class="text-white w-12 text-center" data-zoom>{{ Math.round(visor.zoom * 100) }}%</span>
+                <button @click="zoomVisor(1.25)" class="bg-[#29292e] px-2 py-1 rounded" data-zoom-mas>+</button>
+                <button @click="ajustarVisor" class="bg-[#29292e] px-2 py-1 rounded">Ajustar</button>
+                <span class="flex-1"></span>
+                <button @click="visor = null" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="flex flex-1 min-h-0">
+                <div ref="lienzoVisor" class="flex-1 overflow-auto bg-[#0b0b0d] relative" data-lienzo>
+                    <div v-if="visor.info" class="relative select-none" :style="{ width: ptAPx(visor.info.ancho_pt) + 'px', height: ptAPx(visor.info.alto_pt) + 'px' }"
+                         @mousedown.prevent="empezarDibujo" @mousemove="seguirDibujo" @mouseup="terminarDibujo" @mouseleave="terminarDibujo" data-hoja-lienzo>
+                        <img :src="visor.urlImagen" :style="{ width: '100%', height: '100%' }" draggable="false" data-hoja-img>
+                        <div v-for="c in cajasVisibles" :key="c.clave" class="absolute pointer-events-none" :data-caja="c.clave"
+                             :style="{ left: ptAPx(c.rect[0]) + 'px', top: ptAPx(c.rect[1]) + 'px', width: ptAPx(c.rect[2] - c.rect[0]) + 'px', height: ptAPx(c.rect[3] - c.rect[1]) + 'px',
+                                       border: c.borde, background: c.fondo }">
+                            <span class="absolute -top-5 left-0 text-[10px] px-1 rounded whitespace-nowrap" :style="{ background: c.etiquetaFondo, color: '#000' }">{{ c.etiqueta }}</span>
+                        </div>
+                    </div>
+                    <p v-else class="p-6 text-gray-400 text-sm">Cargando la hoja…</p>
+                </div>
+                <div class="w-96 border-l border-[#29292e] overflow-y-auto p-4 space-y-4 text-sm">
+                    <div>
+                        <label class="text-xs text-gray-400">Elemento</label>
+                        <select v-model="visor.uid" @change="cambiarElemento" data-visor-elemento class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-2 py-1.5 text-white">
+                            <option value="">— elige un elemento —</option>
+                            <option v-for="e in visor.elementos" :key="e.uid" :value="e.uid">{{ e.id_elemento }} · {{ e.ejes }} · {{ e.nivel_rango }}</option>
+                        </select>
+                        <p v-if="!visor.elementos.length" class="text-xs text-orange-300 mt-1">Esta obra aún no tiene elementos de diseño: los recuadros se guardan por elemento.</p>
+                        <p v-if="elementoVisor && elementoVisor.revisar_motivo" class="text-xs text-orange-300 mt-1">{{ elementoVisor.revisar_motivo }}</p>
+                    </div>
+                    <button @click="proponerVisor" :disabled="!visor.uid || visor.ocupado" data-proponer class="w-full bg-[#29292e] hover:bg-[#323238] disabled:opacity-50 text-white font-semibold py-1.5 rounded">Proponer recuadros</button>
+                    <div v-for="t in tiposRecuadro" :key="t.tipo" class="bg-[#121214] border rounded-lg p-3 space-y-2" :class="visor.tipo === t.tipo ? 'border-yellow-500' : 'border-[#29292e]'" :data-recuadro="t.tipo">
+                        <div class="flex items-center justify-between">
+                            <label class="font-semibold text-white"><input type="radio" v-model="visor.tipo" :value="t.tipo" class="mr-1.5">{{ t.titulo }}</label>
+                            <span class="text-[10px] px-1.5 py-0.5 rounded border" :class="estadoRecuadro(t.tipo).clase">{{ estadoRecuadro(t.tipo).texto }}</span>
+                        </div>
+                        <p class="text-xs text-gray-400" :data-detalle-recuadro="t.tipo">{{ detalleRecuadro(t.tipo) }}</p>
+                        <div class="flex flex-wrap gap-2">
+                            <button @click="usarPropuesta(t.tipo)" :disabled="!visor.propuestas || !visor.propuestas[t.tipo] || !visor.propuestas[t.tipo].rect" :data-usar="t.tipo" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-40 text-white text-xs px-2 py-1 rounded">Usar propuesta</button>
+                            <button @click="guardarRecuadro(t.tipo)" :disabled="!visor.uid || !visor.borrador[t.tipo]" :data-guardar-recuadro="t.tipo" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black text-xs font-bold px-2 py-1 rounded">Confirmar y guardar</button>
+                            <button @click="vistaPrevia(t.tipo)" :disabled="!rectActual(t.tipo)" :data-previa="t.tipo" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-40 text-white text-xs px-2 py-1 rounded">Vista previa</button>
+                        </div>
+                        <img v-if="visor.previas[t.tipo]" :src="visor.previas[t.tipo]" class="w-full border border-[#29292e] rounded" :data-previa-img="t.tipo">
+                    </div>
+                    <p class="text-xs text-gray-400">Dibuja un recuadro arrastrando sobre la hoja; se aplica al tipo marcado. Las coordenadas se guardan en puntos del PDF vectorial.</p>
+                    <p v-if="visor.error" class="bg-red-950 border border-red-700 text-red-200 rounded px-3 py-2 text-xs" data-visor-error>{{ visor.error }}</p>
+                    <p v-if="visor.mensaje" class="bg-green-950 border border-green-700 text-green-200 rounded px-3 py-2 text-xs" data-visor-mensaje>{{ visor.mensaje }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL: DATOS DE LA OBRA QUE EL PLANO NO DA (E-n ↔ nivel, L# → tipo, hojas) -->
     <div v-if="modalDatos" class="fixed inset-0 bg-black/70 z-50 flex items-start justify-center overflow-y-auto p-6" data-modal-datos>
         <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl w-full max-w-3xl">
@@ -343,7 +405,7 @@
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted } = Vue;
+        const { createApp, ref, computed, onMounted, nextTick } = Vue;
         const API = 'http://localhost:8000';
         const PENDIENTE = 'pendiente de verificar';
 
@@ -361,6 +423,8 @@
                 const avisoObra = ref('');
                 const modalObra = ref(null);
                 const modalDatos = ref(null);
+                const visor = ref(null);
+                const lienzoVisor = ref(null);
 
                 // --- Utilidades de presentación (no calculan reglas de ingeniería) ---
                 const esPendiente = (v) => v === null || v === undefined || v === '' || String(v).trim().toLowerCase() === PENDIENTE;
@@ -555,6 +619,157 @@
                     }
                 };
 
+                // --- Etapa 2 · T5n: visor del vectorial y recuadros ---
+                // Coordenadas guardadas = PUNTOS del PDF en el marco visual de la hoja; la imagen se pide a `dpi` y se muestra con `zoom`.
+                const tiposRecuadro = [{ tipo: 'localizacion', titulo: 'LOCALIZACION' }, { tipo: 'detalle', titulo: 'DETALLE' }];
+                const ptAPx = (v) => v * (visor.value.info.dpi / 72) * visor.value.zoom;
+                const pxAPt = (v) => v / visor.value.zoom * 72 / visor.value.info.dpi;
+                const redondear = (r) => r.map(v => Math.round(v * 100) / 100);
+
+                const abrirVisor = async (p) => {
+                    visor.value = { proyecto_id: p.id, nombre: p.nombre, hojas: [], pagina: 1, info: null, urlImagen: '', zoom: 1,
+                        elementos: [], uid: '', tipo: 'localizacion', propuestas: null, borrador: { localizacion: null, detalle: null },
+                        previas: {}, error: '', mensaje: '', ocupado: false, dibujando: null };
+                    try {
+                        const [ri, re] = await Promise.all([fetch(`${API}/api/proyectos/${p.id}/visor/indice`), fetch(`${API}/api/proyectos/${p.id}/elementos`)]);
+                        if (!ri.ok) throw new Error(await leerError(ri));
+                        visor.value.hojas = (await ri.json()).hojas;
+                        visor.value.elementos = re.ok ? (await re.json()).elementos : [];
+                        visor.value.pagina = (visor.value.hojas[0] || { pagina: 1 }).pagina;
+                        await cargarHoja();
+                    } catch (e) { visor.value.error = e.message; }
+                };
+                const cargarHoja = async () => {
+                    const v = visor.value;
+                    v.error = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/visor/hojas/${v.pagina}/info?dpi=60`);
+                        if (!r.ok) throw new Error(await leerError(r));
+                        v.info = await r.json();
+                        v.urlImagen = `${API}/api/proyectos/${v.proyecto_id}/visor/hojas/${v.pagina}.png?dpi=${v.info.dpi}`;
+                        await ajustarVisor();
+                    } catch (e) { v.error = e.message; }
+                };
+                const zoomVisor = (f) => { visor.value.zoom = Math.min(8, Math.max(0.1, visor.value.zoom * f)); };
+                const ajustarVisor = async () => {
+                    await nextTick();
+                    const v = visor.value, c = lienzoVisor.value;
+                    if (v && v.info && c) v.zoom = Math.max(0.1, Math.min(8, ((c.clientWidth || window.innerWidth * 0.6) - 8) / v.info.ancho_px));
+                };
+                const elementoVisor = computed(() => visor.value ? visor.value.elementos.find(e => e.uid === visor.value.uid) : null);
+                const guardadoDe = (tipo) => {
+                    const e = elementoVisor.value;
+                    const g = e ? (tipo === 'localizacion' ? e.recorte_planta : e.recorte_detalle) : null;
+                    return g && g.rect ? g : null;
+                };
+                const cambiarElemento = () => {
+                    const v = visor.value;
+                    v.propuestas = null; v.borrador = { localizacion: null, detalle: null }; v.previas = {}; v.mensaje = ''; v.error = '';
+                    for (const t of ['localizacion', 'detalle']) {
+                        const g = guardadoDe(t);
+                        if (g) v.borrador[t] = null;
+                    }
+                    const g = guardadoDe(v.tipo) || guardadoDe('localizacion') || guardadoDe('detalle');
+                    if (g && g.pagina !== v.pagina) { v.pagina = g.pagina; cargarHoja(); }
+                };
+                const proponerVisor = async () => {
+                    const v = visor.value;
+                    v.ocupado = true; v.error = ''; v.mensaje = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/elementos/${v.uid}/propuesta`, { method: 'POST' });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        v.propuestas = await r.json();
+                        const l = v.propuestas.localizacion;
+                        if (l && l.rect && l.pagina !== v.pagina) { v.pagina = l.pagina; await cargarHoja(); }
+                    } catch (e) { v.error = e.message; } finally { v.ocupado = false; }
+                };
+                const usarPropuesta = async (tipo) => {
+                    const v = visor.value, p = v.propuestas && v.propuestas[tipo];
+                    if (!p || !p.rect) return;
+                    v.borrador[tipo] = { pagina: p.pagina, rect: p.rect.slice(), origen: 'confirmado' };
+                    v.tipo = tipo;
+                    if (p.pagina !== v.pagina) { v.pagina = p.pagina; await cargarHoja(); }
+                };
+                const rectActual = (tipo) => {
+                    const v = visor.value, b = v.borrador[tipo], g = guardadoDe(tipo);
+                    return b ? { pagina: b.pagina, rect: b.rect } : (g ? { pagina: g.pagina, rect: g.rect } : null);
+                };
+                const estadoRecuadro = (tipo) => {
+                    const v = visor.value;
+                    if (v.borrador[tipo]) return { texto: 'sin guardar', clase: 'bg-blue-950 text-blue-300 border-blue-700' };
+                    if (guardadoDe(tipo)) return { texto: 'confirmado', clase: 'bg-green-950 text-green-300 border-green-700' };
+                    const p = v.propuestas && v.propuestas[tipo];
+                    if (p) return { texto: p.rect ? 'propuesto · pendiente de verificar' : 'pendiente de verificar', clase: 'bg-orange-950 text-orange-300 border-orange-600' };
+                    return { texto: 'pendiente de verificar', clase: 'bg-orange-950 text-orange-300 border-orange-600' };
+                };
+                const detalleRecuadro = (tipo) => {
+                    const v = visor.value, b = v.borrador[tipo], g = guardadoDe(tipo), p = v.propuestas && v.propuestas[tipo];
+                    const fmt = (x) => `p${x.pagina} · [${x.rect.map(n => Math.round(n)).join(', ')}] pt`;
+                    if (b) return `${fmt(b)} (${b.origen})`;
+                    if (g) return `${fmt(g)} · ${g.origen} por ${g.confirmado_por}`;
+                    if (p) return p.rect ? `${fmt(p)} · fuente: ${p.fuente.metodo}${p.fuente.rotulo ? ' «' + p.fuente.rotulo + '»' : ''}` : p.motivo;
+                    return 'Sin recuadro: elige un elemento y pulsa «Proponer recuadros», o dibújalo.';
+                };
+                const guardarRecuadro = async (tipo) => {
+                    const v = visor.value, b = v.borrador[tipo];
+                    if (!b || !v.uid) return;
+                    v.error = ''; v.mensaje = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/elementos/${v.uid}/recuadro`, { method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo, pagina: b.pagina, rect: b.rect, origen: b.origen }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const g = (await r.json()).guardado;
+                        const e = v.elementos.find(x => x.uid === v.uid);
+                        if (tipo === 'localizacion') e.recorte_planta = g; else e.recorte_detalle = g;
+                        v.borrador[tipo] = null;
+                        v.mensaje = `${tipo === 'localizacion' ? 'LOCALIZACION' : 'DETALLE'} guardado (confirmado por ${g.confirmado_por}).`;
+                        await vistaPrevia(tipo);
+                    } catch (e) { v.error = e.message; }
+                };
+                const vistaPrevia = async (tipo) => {
+                    const v = visor.value, ra = rectActual(tipo);
+                    if (!ra) return;
+                    v.error = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/visor/vista-previa`, { method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo, pagina: ra.pagina, rect: ra.rect }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        if (v.previas[tipo]) URL.revokeObjectURL(v.previas[tipo]);
+                        v.previas[tipo] = URL.createObjectURL(await r.blob());
+                    } catch (e) { v.error = e.message; v.previas[tipo] = ''; }
+                };
+                // Cajas sobre la hoja actual: guardadas (verde), propuestas (amarillo) y borrador / dibujo en curso (azul)
+                const cajasVisibles = computed(() => {
+                    const v = visor.value, out = [];
+                    if (!v) return out;
+                    for (const t of ['localizacion', 'detalle']) {
+                        const g = guardadoDe(t), p = v.propuestas && v.propuestas[t], b = v.borrador[t];
+                        const sigla = t === 'localizacion' ? 'LOC' : 'DET';
+                        if (g && g.pagina === v.pagina) out.push({ clave: `guardado-${t}`, rect: g.rect, etiqueta: `${sigla} confirmado`, borde: '2px solid #22c55e', fondo: 'rgba(34,197,94,0.08)', etiquetaFondo: '#22c55e' });
+                        if (p && p.rect && p.pagina === v.pagina) out.push({ clave: `propuesta-${t}`, rect: p.rect, etiqueta: `${sigla} propuesto (pendiente)`, borde: '2px dashed #eab308', fondo: 'rgba(234,179,8,0.08)', etiquetaFondo: '#eab308' });
+                        if (b && b.pagina === v.pagina) out.push({ clave: `borrador-${t}`, rect: b.rect, etiqueta: `${sigla} sin guardar`, borde: '2px solid #3b82f6', fondo: 'rgba(59,130,246,0.12)', etiquetaFondo: '#60a5fa' });
+                    }
+                    return out;
+                });
+                const puntoDeEvento = (ev) => {
+                    const r = ev.currentTarget.getBoundingClientRect();
+                    return [pxAPt(ev.clientX - r.left), pxAPt(ev.clientY - r.top)];
+                };
+                const empezarDibujo = (ev) => { visor.value.dibujando = puntoDeEvento(ev); };
+                const seguirDibujo = (ev) => {
+                    const v = visor.value;
+                    if (!v.dibujando) return;
+                    const [x, y] = puntoDeEvento(ev), [x0, y0] = v.dibujando;
+                    v.borrador[v.tipo] = { pagina: v.pagina, rect: redondear([Math.min(x0, x), Math.min(y0, y), Math.max(x0, x), Math.max(y0, y)]), origen: 'dibujado' };
+                };
+                const terminarDibujo = () => {
+                    const v = visor.value;
+                    if (!v || !v.dibujando) return;
+                    v.dibujando = null;
+                    const b = v.borrador[v.tipo];
+                    if (b && (b.rect[2] - b.rect[0] < 5 || b.rect[3] - b.rect[1] < 5)) v.borrador[v.tipo] = null;   // un clic suelto no es un recuadro
+                };
+
                 const contarOTs = (estado) => ordenes.value.filter(o => o.estado === estado).length;
                 const filtrarOTs = (estado) => ordenes.value.filter(o => o.estado === estado);
 
@@ -568,7 +783,10 @@
                     esPendiente, formatearFecha, parsearJSON, etiquetaCampo, claseEstado, nombreProyecto,
                     sincronizarDropbox, contarOTs, filtrarOTs,
                     planosVigentes, avisoObra, modalObra, modalDatos, gruposDatos,
-                    abrirNuevaObra, abrirCambiarPlano, cerrarModalObra, enviarObra, abrirDatosObra, guardarDatos
+                    abrirNuevaObra, abrirCambiarPlano, cerrarModalObra, enviarObra, abrirDatosObra, guardarDatos,
+                    visor, lienzoVisor, tiposRecuadro, elementoVisor, cajasVisibles, ptAPx, abrirVisor, cargarHoja, zoomVisor, ajustarVisor,
+                    cambiarElemento, proponerVisor, usarPropuesta, rectActual, estadoRecuadro, detalleRecuadro, guardarRecuadro,
+                    vistaPrevia, empezarDibujo, seguirDibujo, terminarDibujo
                 };
             }
         }).mount('#app');
