@@ -707,6 +707,9 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
                       json.dumps(t["comprobaciones"], ensure_ascii=False), json.dumps(_filas_para_guardar(t), ensure_ascii=False),
                       json.dumps(uids), json.dumps({**t["fuente"], "revision": plano["revision"], "sha256": sha_antes},
                                                    ensure_ascii=False), usuario, ahora))
+            from plano.confirmacion import campo_ya_confirmado  # T7n (import tardío: confirmacion importa este módulo)
+            # Un campo que el usuario ya confirmó (por lote o en la Mesa) no vuelve a pedir su duda
+            dudas = [d for d in dudas if not campo_ya_confirmado(conn, proyecto_id, d["id_elemento"], ORIGEN_DUDA + d["campo"])]
             for d in dudas:
                 dudas_creadas += _abrir_duda(conn, proyecto_id, d["id_elemento"], d["campo"], d["texto"])
             cerradas = _cerrar_dudas_viejas(conn, proyecto_id, {(d["id_elemento"], ORIGEN_DUDA + d["campo"]) for d in dudas},
@@ -737,14 +740,39 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
     return resumen
 
 
+def vigencia_tabla(conn, t, plano) -> List[str]:
+    """
+    Motivos por los que una fila de `tablas_extraidas` NO es de la extracción vigente (lista vacía = vigente), para
+    T7n: otro plano, otra revisión o sha256, una corrida anterior (la última ya no leyó esa tabla) o datos de la obra
+    cambiados después de extraer.
+    """
+    if plano is None or t["plano_id"] != plano["id"]:
+        return ["la tabla se leyó de un plano que ya no es el vigente"]
+    motivos = []
+    fuente = json.loads(t["fuente_json"] or "{}")
+    if fuente.get("sha256") != plano["vectorial_sha256"] or fuente.get("revision") != plano["revision"]:
+        motivos.append("la revisión o el sha256 del vectorial no coinciden con los del plano vigente")
+    ultima = conn.execute("SELECT MAX(extraido_en) FROM tablas_extraidas WHERE plano_id = ?", (plano["id"],)).fetchone()[0]
+    if t["extraido_en"] != ultima:
+        motivos.append("la tabla es de una extracción anterior: la última corrida ya no la leyó")
+    datos = conn.execute("SELECT MAX(actualizado) FROM obra_datos_usuario WHERE proyecto_id = ?",
+                         (t["proyecto_id"],)).fetchone()[0]
+    if datos and datos > t["extraido_en"]:
+        motivos.append("los datos de la obra cambiaron después de la extracción: vuelve a extraer")
+    return motivos
+
+
 def listar_tablas(proyecto_id: str) -> List[Dict]:
-    """Tablas extraídas del plano vigente, con su resultado (verde / rojo) y comprobaciones, para T7n."""
+    """Tablas extraídas del plano vigente, con su resultado (verde / rojo), comprobaciones y si son de la extracción
+    vigente (T7n solo confirma esas; las viejas se muestran marcadas)."""
     conn = get_connection()
     try:
         _proyecto(conn, proyecto_id)
+        plano = conn.execute("SELECT * FROM planos WHERE proyecto_id = ? AND estado = 'vigente'", (proyecto_id,)).fetchone()
         filas = conn.execute("""SELECT t.* FROM tablas_extraidas t JOIN planos p ON p.id = t.plano_id
                                 WHERE t.proyecto_id = ? AND p.estado = 'vigente' ORDER BY t.pagina, t.clave""",
                              (proyecto_id,)).fetchall()
+        motivos = {f["id"]: vigencia_tabla(conn, f, plano) for f in filas}
     finally:
         conn.close()
     out = []
@@ -752,6 +780,8 @@ def listar_tablas(proyecto_id: str) -> List[Dict]:
         d = dict(f)
         for c in ("comprobaciones_json", "filas_json", "elementos_json", "fuente_json"):
             d[c.removesuffix("_json")] = json.loads(d.pop(c))
+        d["motivos_no_vigente"] = motivos[f["id"]]
+        d["vigente"] = not d["motivos_no_vigente"]
         out.append(d)
     return out
 

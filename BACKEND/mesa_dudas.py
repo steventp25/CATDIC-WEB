@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database import get_connection
+from plano import confirmacion
 from reglas_ingenieria import PENDIENTE, _es_fecha_ddmmaaaa_valida
 from sync.escaner_dropbox import SUBRUTA_INFORMES_PROCESADOS
 from sync.parser_visitas import CAMPO_CLASE, CAMPO_FECHA, CLASE_COMPLETIVO, CLASE_PARCIAL
@@ -94,9 +95,16 @@ def _dict_json(texto) -> dict:
 # ---------- Lectura ----------
 
 def listar_dudas(proyecto_id: Optional[str] = None, visita_id: Optional[str] = None,
-                 resuelta: Optional[bool] = None, categoria: Optional[str] = None) -> List[Dict]:
-    """Dudas con el número y la carpeta de su visita. Solo lectura."""
+                 resuelta: Optional[bool] = None, categoria: Optional[str] = None,
+                 sin_visita: bool = False) -> List[Dict]:
+    """
+    Dudas con el número y la carpeta de su visita. Solo lectura. `sin_visita`: solo las de la obra (visita_id NULL),
+    p. ej. las del extractor del plano (T6n:). Una duda T6n: que apunta a un único campo de un elemento trae
+    `campo_confirmable` (elemento, campo, valor y estado actuales): responderla confirma ese campo (T7n).
+    """
     condiciones, params = [], []
+    if sin_visita:
+        condiciones.append("d.visita_id IS NULL")
     if proyecto_id is not None:
         condiciones.append("d.proyecto_id = ?")
         params.append(proyecto_id)
@@ -121,7 +129,14 @@ def listar_dudas(proyecto_id: Optional[str] = None, visita_id: Optional[str] = N
             FROM dudas_y_hallazgos d LEFT JOIN visitas v ON v.id = d.visita_id
             {where} ORDER BY d.id
         """, params).fetchall()
-        return [dict(f) for f in filas]
+        out = []
+        for f in filas:
+            d = dict(f)
+            if d["visita_id"] is None and not d["resuelta"] and d["campo_afectado"].startswith("T6n:"):
+                d["campo_confirmable"] = confirmacion.describir_campo(conn, d["proyecto_id"], d["id_elemento"],
+                                                                      d["campo_afectado"])
+            out.append(d)
+        return out
     finally:
         conn.close()
 
@@ -219,7 +234,14 @@ def _responder(conn, duda_id: int, respuesta: str, stp: Optional[List[str]]) -> 
         # bloqueante abierta del mismo campo: desde T4b el sync solo cuenta bloqueantes resueltas.
         pass
     elif duda["id_elemento"]:
-        pass  # Duda de elemento: solo se guarda la respuesta, no se aplica
+        # T7n: una duda del extractor (T6n:) que apunta a un único campo de un elemento confirma ese campo con el
+        # valor que escribe Steven (validado; auditoría por campo). Las demás dudas de elemento solo guardan la respuesta.
+        try:
+            aplicado = confirmacion.aplicar_respuesta(conn, duda, respuesta, USUARIO)
+        except confirmacion.ValorInvalido as e:
+            raise RespuestaInvalida(str(e)) from None
+        if aplicado:
+            anterior, nuevo = aplicado["anterior"], aplicado["nuevo"]
     elif campo == CAMPO_ARCHIVOS:
         raise RespuestaInvalida(MENSAJE_ARCHIVOS)
     elif campo in (CAMPO_FECHA, CAMPO_CLASE, CAMPO_ESTADO):
@@ -289,8 +311,8 @@ router = APIRouter()
 
 @router.get("/api/dudas")
 def api_listar_dudas(proyecto_id: Optional[str] = None, visita_id: Optional[str] = None,
-                     resuelta: Optional[bool] = None, categoria: Optional[str] = None):
-    return listar_dudas(proyecto_id, visita_id, resuelta, categoria)
+                     resuelta: Optional[bool] = None, categoria: Optional[str] = None, sin_visita: bool = False):
+    return listar_dudas(proyecto_id, visita_id, resuelta, categoria, sin_visita)
 
 
 @router.patch("/api/dudas/{duda_id}")
