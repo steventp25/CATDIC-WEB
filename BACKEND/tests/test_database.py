@@ -236,10 +236,21 @@ def test_migracion_conserva_fila_hijos_y_crea_respaldo(bd_vieja):
         conn.close()
 
     respaldos = _respaldos(bd_vieja.parent, bd_vieja.stem)
-    assert len(respaldos) == 1
-    assert respaldos[0] == detalle["respaldo"]
+    # Una BD vieja pasa por tres migraciones con respaldo: visitas, proyectos (T7a) y columnas de T4n. Exactamente 3
+    # respaldos, y cada uno corresponde a una fila MIGRACION_* de auditoría (ninguno huérfano).
+    assert len(respaldos) == 3
+    conn = database.get_connection()
+    try:
+        filas = conn.execute(
+            "SELECT accion, detalle_json FROM auditoria WHERE accion LIKE 'MIGRACION_%'").fetchall()
+    finally:
+        conn.close()
+    por_accion = {f["accion"]: json.loads(f["detalle_json"])["respaldo"] for f in filas}
+    assert set(por_accion) == {"MIGRACION_VISITAS", "MIGRACION_PROYECTOS_CABECERA", "MIGRACION_COLUMNAS_T4N"}
+    assert sorted(por_accion.values()) == respaldos
+    assert por_accion["MIGRACION_VISITAS"] == detalle["respaldo"]
     # El respaldo conserva el esquema viejo y la fila
-    copia = sqlite3.connect(bd_vieja.parent / respaldos[0])
+    copia = sqlite3.connect(bd_vieja.parent / detalle["respaldo"])
     try:
         sql = copia.execute("SELECT sql FROM sqlite_master WHERE name='visitas'").fetchone()[0]
         assert "'Mixta'" not in sql
@@ -558,5 +569,266 @@ def test_columna_origen_se_anade_una_sola_vez_y_conserva_filas(bd_temporal):
     try:
         assert conn.execute("SELECT sql FROM sqlite_master WHERE name='visitas'").fetchone()[0] == sql_1
         assert _n_auditoria_origen(conn) == 1
+    finally:
+        conn.close()
+
+
+# ---------- Etapa 2 · T1 — elementos_diseno: UNIQUE, fuente_json, pendientes_json ----------
+
+def _crear_bd_diseno_vieja(ruta: Path, con_fila: bool = True):
+    """BD con 'elementos_diseno' del esquema anterior a la Etapa 2 (SINTÉTICO)."""
+    conn = sqlite3.connect(ruta)
+    conn.executescript("""
+        CREATE TABLE proyectos (id TEXT PRIMARY KEY);
+        CREATE TABLE elementos_diseno (
+            uid TEXT PRIMARY KEY,
+            proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            id_elemento TEXT NOT NULL, tipo_elemento TEXT NOT NULL,
+            nivel_rango TEXT NOT NULL, ejes TEXT NOT NULL,
+            hoja_plano_origen TEXT NOT NULL, archivo_plano_origen TEXT NOT NULL,
+            datos_diseno_json TEXT NOT NULL, estado_campos_json TEXT NOT NULL,
+            recorte_planta_json TEXT DEFAULT '{}', recorte_detalle_json TEXT DEFAULT '{}',
+            actualizado TEXT NOT NULL
+        );
+        CREATE TABLE elementos_visita (
+            uid TEXT PRIMARY KEY,
+            elemento_diseno_uid TEXT REFERENCES elementos_diseno(uid)
+        );
+        CREATE TABLE auditoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, usuario TEXT,
+            modulo TEXT, accion TEXT, entidad_id TEXT, detalle_json TEXT
+        );
+        INSERT INTO proyectos VALUES ('SINTETICO-P');
+    """)
+    if con_fila:
+        conn.execute(
+            "INSERT INTO elementos_diseno VALUES ('SINTETICO-U1','SINTETICO-P','C1','COLUMNA',"
+            "'S-4','EJE F-11','ES-05','sintetico.pdf','{}','{}','{}','{}','2026-10-22')")
+        conn.execute("INSERT INTO elementos_visita VALUES ('SINTETICO-EV1','SINTETICO-U1')")
+    conn.commit()
+    conn.close()
+
+
+def _n_audit_diseno(conn):
+    return conn.execute(
+        "SELECT COUNT(*) FROM auditoria WHERE accion='MIGRACION_ELEMENTOS_DISENO'").fetchone()[0]
+
+
+def _insertar_diseno(conn, uid, id_elemento="C2", nivel="S-4", ejes="EJE F-12"):
+    conn.execute(
+        "INSERT INTO elementos_diseno (uid, proyecto_id, id_elemento, tipo_elemento, nivel_rango,"
+        " ejes, hoja_plano_origen, archivo_plano_origen, datos_diseno_json, estado_campos_json,"
+        " actualizado) VALUES (?, 'SINTETICO-P', ?, 'COLUMNA', ?, ?, 'ES-05', 's.pdf', '{}', '{}', 'x')",
+        (uid, id_elemento, nivel, ejes))
+
+
+def test_migrar_diseno_conserva_filas_fk_respalda_y_audita(bd_temporal):
+    _crear_bd_diseno_vieja(bd_temporal)
+    resultado = database.migrar_elementos_diseno()
+    assert resultado["migrada"] is True
+    assert Path(resultado["respaldo"]).exists()
+    assert resultado["columnas_nuevas"] == ["fuente_json", "pendientes_json"]
+    conn = database.get_connection()
+    try:
+        fila = conn.execute("SELECT * FROM elementos_diseno WHERE uid='SINTETICO-U1'").fetchone()
+        assert fila["id_elemento"] == "C1" and fila["ejes"] == "EJE F-11"
+        assert fila["fuente_json"] == "{}" and fila["pendientes_json"] == "[]"
+        assert conn.execute("SELECT elemento_diseno_uid FROM elementos_visita").fetchone()[0] == "SINTETICO-U1"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert _n_audit_diseno(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_migrar_diseno_dos_veces_no_cambia_nada(bd_temporal):
+    _crear_bd_diseno_vieja(bd_temporal)
+    database.migrar_elementos_diseno()
+    respaldos = _respaldos(bd_temporal.parent, bd_temporal.stem)
+    assert database.migrar_elementos_diseno() == {
+        "migrada": False, "motivo": "ya migrada", "respaldo": None}
+    assert _respaldos(bd_temporal.parent, bd_temporal.stem) == respaldos
+    conn = database.get_connection()
+    try:
+        assert _n_audit_diseno(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_unique_diseno_rechaza_duplicado_en_bd_migrada_y_en_bd_nueva(bd_temporal, tmp_path, monkeypatch):
+    _crear_bd_diseno_vieja(bd_temporal)
+    database.migrar_elementos_diseno()
+    conn = database.get_connection()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            _insertar_diseno(conn, "SINTETICO-U2", "C1", "S-4", "EJE F-11")  # duplicado de U1
+        _insertar_diseno(conn, "SINTETICO-U3", "C1", "S-3", "EJE F-11")      # otro nivel: permitido
+    finally:
+        conn.close()
+
+    nueva = tmp_path / "nueva.db"
+    monkeypatch.setenv(config.ENV_DB_PATH, str(nueva))
+    database.inicializar_bd()
+    conn = database.get_connection()
+    try:
+        conn.execute("INSERT INTO proyectos (id, nombre, tipo, formato_defecto, actualizado)"
+                     " VALUES ('SINTETICO-P','x','Supervisión','STP-MIVED','x')")
+        _insertar_diseno(conn, "A1")
+        with pytest.raises(sqlite3.IntegrityError):
+            _insertar_diseno(conn, "A2")
+        assert _n_audit_diseno(conn) == 0  # BD nueva: sin migración ni respaldo
+    finally:
+        conn.close()
+    assert _respaldos(nueva.parent, nueva.stem) == []
+
+
+def test_migrar_diseno_con_duplicados_previos_revierte(bd_temporal):
+    _crear_bd_diseno_vieja(bd_temporal)
+    conn = sqlite3.connect(bd_temporal)
+    conn.execute("INSERT INTO elementos_diseno VALUES ('SINTETICO-U9','SINTETICO-P','C1','COLUMNA',"
+                 "'S-4','EJE F-11','ES-05','s.pdf','{}','{}','{}','{}','x')")
+    conn.commit()
+    conn.close()
+    with pytest.raises(sqlite3.IntegrityError):
+        database.migrar_elementos_diseno()
+    conn = sqlite3.connect(bd_temporal)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(elementos_diseno)")}
+        assert "fuente_json" not in cols
+        assert conn.execute("SELECT COUNT(*) FROM elementos_diseno").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+# ---------- Etapa 3 · T7a — datos de cabecera en 'proyectos' ----------
+
+COLUMNAS_CABECERA = ("direccion_obra", "provincia", "sector")
+
+
+def _crear_bd_proyectos_vieja(ruta: Path):
+    """BD con 'proyectos' del esquema anterior a T7a (SINTÉTICO)."""
+    conn = sqlite3.connect(ruta)
+    conn.executescript("""
+        CREATE TABLE proyectos (
+            id TEXT PRIMARY KEY, nombre TEXT NOT NULL, tipo TEXT NOT NULL,
+            formato_defecto TEXT NOT NULL, no_solicitud TEXT DEFAULT '', no_licencia TEXT DEFAULT '',
+            residente_obra TEXT DEFAULT '', actualizado TEXT NOT NULL
+        );
+        CREATE TABLE auditoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, usuario TEXT,
+            modulo TEXT, accion TEXT, entidad_id TEXT, detalle_json TEXT
+        );
+        INSERT INTO proyectos VALUES ('SINTETICO-P','Proyecto sintético','Supervisión','STP-MIVED','S1','L1','R1','x');
+    """)
+    conn.commit()
+    conn.close()
+
+
+def _n_audit_proyectos(conn):
+    return conn.execute(
+        "SELECT COUNT(*) FROM auditoria WHERE accion='MIGRACION_PROYECTOS_CABECERA'").fetchone()[0]
+
+
+def test_migrar_proyectos_conserva_filas_respalda_y_audita(bd_temporal):
+    _crear_bd_proyectos_vieja(bd_temporal)
+    r = database.migrar_proyectos_cabecera()
+    assert r["migrada"] is True and Path(r["respaldo"]).exists()
+    assert r["columnas_nuevas"] == list(COLUMNAS_CABECERA) and r["filas_conservadas"] == 1
+    conn = database.get_connection()
+    try:
+        fila = dict(conn.execute("SELECT * FROM proyectos WHERE id='SINTETICO-P'").fetchone())
+        assert (fila["nombre"], fila["no_solicitud"], fila["no_licencia"], fila["residente_obra"]) == (
+            "Proyecto sintético", "S1", "L1", "R1")
+        assert all(fila[c] == "" for c in COLUMNAS_CABECERA)  # no se siembra ningún valor
+        assert _n_audit_proyectos(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_migrar_proyectos_dos_veces_no_cambia_nada(bd_temporal):
+    _crear_bd_proyectos_vieja(bd_temporal)
+    database.migrar_proyectos_cabecera()
+    respaldos = _respaldos(bd_temporal.parent, bd_temporal.stem)
+    assert database.migrar_proyectos_cabecera() == {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+    assert _respaldos(bd_temporal.parent, bd_temporal.stem) == respaldos
+    conn = database.get_connection()
+    try:
+        assert _n_audit_proyectos(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_bd_nueva_trae_las_columnas_sin_respaldo_ni_auditoria(bd_temporal):
+    database.inicializar_bd()
+    conn = database.get_connection()
+    try:
+        columnas = {r[1] for r in conn.execute("PRAGMA table_info(proyectos)")}
+        assert set(COLUMNAS_CABECERA) <= columnas
+        assert _n_audit_proyectos(conn) == 0
+    finally:
+        conn.close()
+    assert _respaldos(bd_temporal.parent, bd_temporal.stem) == []
+
+
+def _cliente_con_proyecto(bd_temporal):
+    from fastapi.testclient import TestClient
+    import main
+    cliente = TestClient(main.app)
+    database.inicializar_bd()
+    conn = database.get_connection()
+    conn.execute("INSERT INTO proyectos (id, nombre, tipo, formato_defecto, actualizado) "
+                 "VALUES ('SINTETICO-P','Sintético','Supervisión','STP-MIVED','x')")
+    conn.commit()
+    conn.close()
+    return cliente
+
+
+def test_patch_acepta_los_campos_nuevos_y_los_audita(bd_temporal):
+    cliente = _cliente_con_proyecto(bd_temporal)
+    cuerpo = {"direccion_obra": "CALLE SINTETICA 1", "provincia": "PROVINCIA SINTETICA",
+              "sector": "SECTOR SINTETICO", "no_licencia": "LIC-SINT", "no_solicitud": "SOL-SINT",
+              "residente_obra": "RESIDENTE SINTETICO"}  # SINTÉTICO: no son datos de cliente
+    r = cliente.patch("/api/proyectos/SINTETICO-P", json=cuerpo)
+    assert r.status_code == 200, r.text
+    conn = database.get_connection()
+    try:
+        fila = dict(conn.execute("SELECT * FROM proyectos WHERE id='SINTETICO-P'").fetchone())
+        assert all(fila[k] == v for k, v in cuerpo.items())
+        aud = conn.execute("SELECT * FROM auditoria WHERE accion='ACTUALIZAR_PROYECTO'").fetchall()
+        assert len(aud) == 1 and aud[0]["modulo"] == "PROYECTOS" and aud[0]["entidad_id"] == "SINTETICO-P"
+        assert aud[0]["usuario"]
+        detalle = json.loads(aud[0]["detalle_json"])
+        assert detalle["sector"] == {"anterior": "", "nuevo": "SECTOR SINTETICO"}
+        assert set(detalle) == set(cuerpo)
+    finally:
+        conn.close()
+    # Un segundo PATCH guarda el valor anterior en la auditoría
+    cliente.patch("/api/proyectos/SINTETICO-P", json={"sector": "OTRO SINTETICO"})
+    conn = database.get_connection()
+    try:
+        ultimo = json.loads(conn.execute(
+            "SELECT detalle_json FROM auditoria WHERE accion='ACTUALIZAR_PROYECTO' ORDER BY id DESC").fetchone()[0])
+        assert ultimo == {"sector": {"anterior": "SECTOR SINTETICO", "nuevo": "OTRO SINTETICO"}}
+    finally:
+        conn.close()
+
+
+def test_patch_proyecto_inexistente_o_vacio_no_audita(bd_temporal):
+    cliente = _cliente_con_proyecto(bd_temporal)
+    assert cliente.patch("/api/proyectos/NO-EXISTE", json={"sector": "X"}).status_code == 404
+    assert cliente.patch("/api/proyectos/SINTETICO-P", json={}).status_code == 400
+    conn = database.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM auditoria WHERE accion='ACTUALIZAR_PROYECTO'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_patch_sigue_aceptando_los_campos_de_siempre(bd_temporal):
+    cliente = _cliente_con_proyecto(bd_temporal)
+    assert cliente.patch("/api/proyectos/SINTETICO-P", json={"cliente": "CLIENTE SINT", "avance_obra": 40}).status_code == 200
+    conn = database.get_connection()
+    try:
+        fila = conn.execute("SELECT cliente, avance_obra FROM proyectos WHERE id='SINTETICO-P'").fetchone()
+        assert (fila["cliente"], fila["avance_obra"]) == ("CLIENTE SINT", 40)
     finally:
         conn.close()
