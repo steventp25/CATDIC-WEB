@@ -12,6 +12,8 @@
 # - PROPONE filas de `elementos_diseno`: cada valor con su fuente (archivo, revisión, página, hoja y bbox), TODOS los
 #   campos `pendiente_de_verificar`, todo pasa por el validador de T2. Idempotente por la clave UNIQUE de T1; nunca
 #   toca un campo ya confirmado; un choque con el UNIQUE abre una duda (nunca un IntegrityError).
+# - Sus dudas llevan el prefijo 'T6n:' en campo_afectado; al volver a extraer se cierran (con auditoría) las que la
+#   corrida ya no genera. Las de la obra (T4n) no se tocan.
 # - Comprobaciones cruzadas por tabla (verde / rojo) guardadas en `tablas_extraidas` para la confirmación por lote
 #   de T7n. Fuera de alcance: pórticos, fotos y visitas.
 import hashlib
@@ -499,7 +501,11 @@ def _validar(prop: Dict) -> Dict:
 
 # ---------- Escritura en la BD ----------
 
+ORIGEN_DUDA = f"{EXTRACTOR}:"  # prefijo de campo_afectado: distingue las dudas del extractor de las de la obra (T4n)
+
+
 def _abrir_duda(conn, proyecto_id: str, id_elemento: str, campo: str, texto: str) -> bool:
+    campo = ORIGEN_DUDA + campo
     ya = conn.execute("""SELECT 1 FROM dudas_y_hallazgos WHERE proyecto_id = ? AND visita_id IS NULL AND id_elemento = ?
                          AND campo_afectado = ? AND resuelta = 0""", (proyecto_id, id_elemento, campo)).fetchone()
     if ya:
@@ -508,6 +514,23 @@ def _abrir_duda(conn, proyecto_id: str, id_elemento: str, campo: str, texto: str
                     descripcion_pregunta, creado) VALUES (?, NULL, ?, 'DUDA_BLOQUEANTE', ?, ?, ?)""",
                  (proyecto_id, id_elemento, campo, texto, _ahora()))
     return True
+
+
+def _cerrar_dudas_viejas(conn, proyecto_id: str, vigentes: set, usuario: str, ahora: str) -> List[int]:
+    """Cierra las dudas del extractor abiertas en la obra que esta corrida ya no genera (el dato llegó o la causa
+    desapareció). Las dudas de otro origen (p. ej. las de la obra de T4n) no se tocan."""
+    cerradas = [r["id"] for r in conn.execute(
+        """SELECT id, id_elemento, campo_afectado FROM dudas_y_hallazgos WHERE proyecto_id = ? AND visita_id IS NULL
+           AND resuelta = 0 AND substr(campo_afectado, 1, ?) = ?""", (proyecto_id, len(ORIGEN_DUDA), ORIGEN_DUDA))
+        if (r["id_elemento"], r["campo_afectado"]) not in vigentes]
+    for i in cerradas:
+        conn.execute("UPDATE dudas_y_hallazgos SET resuelta = 1, respuesta_usuario = ?, resuelto_en = ? WHERE id = ?",
+                     (f"Resuelta por re-extracción ({usuario})", ahora, i))
+    if cerradas:
+        conn.execute("INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json) "
+                     "VALUES (?, ?, 'EXTRACTOR', 'CERRAR_DUDAS_REEXTRACCION', ?, ?)",
+                     (ahora, usuario, proyecto_id, json.dumps({"dudas_cerradas": cerradas})))
+    return cerradas
 
 
 def _datos_usuario(conn, proyecto_id: str) -> Dict[str, Dict[str, str]]:
@@ -668,6 +691,8 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
                                                    ensure_ascii=False), usuario, ahora))
             for d in dudas:
                 dudas_creadas += _abrir_duda(conn, proyecto_id, d["id_elemento"], d["campo"], d["texto"])
+            cerradas = _cerrar_dudas_viejas(conn, proyecto_id, {(d["id_elemento"], ORIGEN_DUDA + d["campo"]) for d in dudas},
+                                            usuario, ahora)
             resumen = {
                 "plano_id": plano["id"], "archivo": plano["vectorial_archivo"], "revision": plano["revision"],
                 "sha256": sha_antes, "sha256_sin_cambios": sha_despues == sha_antes, "paginas": len(lectura["indice"]),
@@ -678,7 +703,7 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
                            for t in lectura["tablas"]],
                 "elementos": {"propuestos": len(validados), **cuenta},
                 "campos": {"propuestos": campos_propuestos, "vacios": campos_vacios},
-                "dudas_creadas": dudas_creadas,
+                "dudas_creadas": dudas_creadas, "dudas_cerradas": len(cerradas),
             }
             conn.execute("INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json) "
                          "VALUES (?, ?, 'EXTRACTOR', 'EXTRAER_DISENO', ?, ?)",

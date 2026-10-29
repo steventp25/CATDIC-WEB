@@ -132,8 +132,10 @@ def _elementos(pid):
 def _dudas(pid):
     conn = database.get_connection()
     try:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM dudas_y_hallazgos WHERE proyecto_id = ? AND resuelta = 0", (pid,))]
+        # solo las del extractor (prefijo T6n:); `campo` es el campo_afectado sin el prefijo
+        return [{**dict(r), "campo": r["campo_afectado"].removeprefix("T6n:")} for r in conn.execute(
+            "SELECT * FROM dudas_y_hallazgos WHERE proyecto_id = ? AND resuelta = 0 AND campo_afectado LIKE 'T6n:%'",
+            (pid,))]
     finally:
         conn.close()
 
@@ -173,7 +175,7 @@ def test_celdas_desalineadas_se_leen_y_cada_valor_lleva_su_fuente_y_queda_pendie
     assert _tabla(c, pid, "p1:acero_en_losa")["resultado"] == "verde"
     assert _tabla(c, pid, "p1:fc_por_rango")["resultado"] == "verde"
     assert sorted(_tabla(c, pid, "p1:acero_en_losa")["elementos"]) == sorted([l1["uid"], l2["uid"]])
-    assert [d for d in _dudas(pid) if d["campo_afectado"] not in ("emparejamiento_hojas",)] == []
+    assert _dudas(pid) == []
 
 
 def test_el_pdf_no_cambia_y_la_corrida_queda_auditada(entorno, tmp_path):
@@ -232,7 +234,7 @@ def test_un_entrepiso_en_dos_rangos_con_fc_distinto_es_rojo_y_abre_duda(entorno)
     assert t["resultado"] == "rojo"
     choque = next(x for x in t["comprobaciones"] if x["comprobacion"] == "rangos_sin_choque")
     assert not choque["ok"] and "E-3" in choque["detalle"][0]
-    assert any(d["campo_afectado"] == "p1:fc_por_rango:rangos_sin_choque" for d in _dudas(pid))
+    assert any(d["campo"] == "p1:fc_por_rango:rangos_sin_choque" for d in _dudas(pid))
     # la losa en E-3 no recibe ninguno de los dos valores: queda pendiente
     assert json.loads(_elementos(pid)[("L1", "NIVEL 2")]["datos_diseno_json"])["fc_kgcm2"] == PENDIENTE
 
@@ -244,7 +246,7 @@ def test_rango_hasta_techo_no_se_expande_sin_la_equivalencia_del_usuario(entorno
     _extraer(c, pid)
     t = _tabla(c, pid, "p1:fc_por_rango")
     assert t["resultado"] == "rojo" and t["filas"][1]["expandido"] is None
-    assert any(d["campo_afectado"] == "p1:fc_por_rango:rangos_expandidos" for d in _dudas(pid))
+    assert any(d["campo"] == "p1:fc_por_rango:rangos_expandidos" for d in _dudas(pid))
     # con la equivalencia E-6 = TECHO el rango se cierra
     c.put(f"/api/proyectos/{pid}/datos-obra", json={"tipo": "equivalencia_nivel", "items": [{"clave": "E-6", "valor": "TECHO"}]})
     _extraer(c, pid)
@@ -257,7 +259,7 @@ def test_falta_la_equivalencia_del_nivel_el_fc_queda_pendiente_con_duda(entorno)
     pid = _obra(c, _vectorial(_planta_basica), {"losa_tipo": {"L1": "A", "L2": "C"}})
     _extraer(c, pid)
     assert json.loads(_elementos(pid)[("L1", "NIVEL 2")]["datos_diseno_json"])["fc_kgcm2"] == PENDIENTE
-    assert any(d["campo_afectado"] == "equivalencia_nivel:NIVEL 2" for d in _dudas(pid))
+    assert any(d["campo"] == "equivalencia_nivel:NIVEL 2" for d in _dudas(pid))
 
 
 # ---------- ID duplicado, tipo de losa y nivel ----------
@@ -267,7 +269,7 @@ def test_id_duplicado_en_el_mismo_nivel_abre_duda_y_la_tabla_queda_roja(entorno)
     pid = _obra(c, _vectorial(lambda d: _planta_basica(d, ids=("L1", "L2", "L1"))), DATOS_COMPLETOS)
     res = _extraer(c, pid)
     assert res["elementos"]["propuestos"] == 2  # no se crean dos L1
-    duda = next(d for d in _dudas(pid) if d["campo_afectado"] == "id_duplicado@NIVEL 2")
+    duda = next(d for d in _dudas(pid) if d["campo"] == "id_duplicado@NIVEL 2")
     assert duda["id_elemento"] == "L1" and duda["categoria"] == "DUDA_BLOQUEANTE"
     t = _tabla(c, pid, "p1:acero_en_losa")
     assert t["resultado"] == "rojo" and "ids_en_planta_sin_duplicados" in [x["comprobacion"] for x in t["comprobaciones"] if not x["ok"]]
@@ -281,7 +283,7 @@ def test_sin_el_tipo_de_la_losa_los_valores_quedan_pendientes_con_una_duda(entor
     d2 = json.loads(_elementos(pid)[("L2", "NIVEL 2")]["datos_diseno_json"])
     assert d2["tipo_losa"] == PENDIENTE and d2["H"] == PENDIENTE and d2["DIR. X"] == PENDIENTE  # no se toma de otra fila
     dudas = [d for d in _dudas(pid) if d["id_elemento"] == "L2"]
-    assert [d["campo_afectado"] for d in dudas] == ["losa_tipo"]  # una sola duda: la causa, no un campo por campo
+    assert [d["campo"] for d in dudas] == ["losa_tipo"]  # una sola duda: la causa, no un campo por campo
     assert _tabla(c, pid, "p1:acero_en_losa")["resultado"] == "rojo"
 
 
@@ -295,12 +297,39 @@ def test_dos_plantas_con_el_mismo_titulo_quedan_sin_nivel_hasta_que_el_usuario_l
     pid = _obra(c, _vectorial(construir), {"losa_tipo": {"L1": "A"}})
     res = _extraer(c, pid)
     assert res["elementos"]["choque"] == 1  # L1 'pendiente' en las dos hojas: no se fusionan
-    campos = {d["campo_afectado"] for d in _dudas(pid)}
+    campos = {d["campo"] for d in _dudas(pid)}
     assert {"nivel_hoja:p1", "nivel_hoja:p2", f"clave_unica@{PENDIENTE}"} <= campos
     c.put(f"/api/proyectos/{pid}/datos-obra", json={"tipo": "techo", "items": [
         {"clave": "1", "valor": "TECHO"}, {"clave": "2", "valor": "TECHO ASCENSOR"}]})
     _extraer(c, pid)
     assert {("L1", "TECHO"), ("L1", "TECHO ASCENSOR")} <= set(_elementos(pid))
+
+
+def test_al_dar_el_dato_y_reextraer_la_duda_del_extractor_se_cierra_con_auditoria(entorno):
+    c = entorno
+    pid = _obra(c, _vectorial(_planta_basica), {"equivalencia_nivel": {"E-2": "NIVEL 2"}, "losa_tipo": {"L1": "A"}})
+    _extraer(c, pid)
+    duda = next(d for d in _dudas(pid) if d["id_elemento"] == "L2" and d["campo"] == "losa_tipo")
+    assert duda["campo_afectado"] == "T6n:losa_tipo"
+    conn = database.get_connection()
+    obra_antes = [dict(r) for r in conn.execute(  # dudas de la obra de T4n (sin prefijo)
+        "SELECT * FROM dudas_y_hallazgos WHERE proyecto_id = ? AND campo_afectado NOT LIKE 'T6n:%' ORDER BY id", (pid,))]
+    conn.close()
+    assert obra_antes and any(d["resuelta"] == 0 for d in obra_antes)
+    # el usuario da L2 → C, pero sin marcar la entrega como completa: la duda de T4n debe seguir abierta
+    c.put(f"/api/proyectos/{pid}/datos-obra", json={"tipo": "losa_tipo", "items": [{"clave": "L2", "valor": "C"}]})
+    res = _extraer(c, pid)
+    assert res["dudas_cerradas"] >= 1 and not any(d["id_elemento"] == "L2" for d in _dudas(pid))
+    conn = database.get_connection()
+    cerrada = dict(conn.execute("SELECT * FROM dudas_y_hallazgos WHERE id = ?", (duda["id"],)).fetchone())
+    aud = conn.execute("SELECT * FROM auditoria WHERE accion = 'CERRAR_DUDAS_REEXTRACCION'").fetchall()
+    obra_despues = [dict(r) for r in conn.execute(
+        "SELECT * FROM dudas_y_hallazgos WHERE proyecto_id = ? AND campo_afectado NOT LIKE 'T6n:%' ORDER BY id", (pid,))]
+    conn.close()
+    assert cerrada["resuelta"] == 1 and cerrada["resuelto_en"] and "re-extracción" in cerrada["respuesta_usuario"]
+    assert len(aud) == 1 and duda["id"] in json.loads(aud[0]["detalle_json"])["dudas_cerradas"] and aud[0]["usuario"]
+    assert obra_despues == obra_antes  # las dudas de la obra (T4n) no se tocan
+    assert _tabla(c, pid, "p1:acero_en_losa")["resultado"] == "verde"
 
 
 # ---------- Comprobaciones de unidades y barras ----------
@@ -324,7 +353,7 @@ def test_una_dimension_en_cm_o_una_barra_ilegible_dejan_la_tabla_en_rojo(entorno
     assert fallos["espesor_total"] == ["A: H 25 ≠ h1 0.20 + h2 0.05", "C: H 0.25 ≠ h1 0.21 + h2 0.05"]
     # el valor se propone tal cual (no se corrige a 0.25 m), pendiente, y la comprobación abre su duda
     assert json.loads(_elementos(pid)[("L1", "NIVEL 2")]["datos_diseno_json"])["H"] == "25"
-    assert {"p1:acero_en_losa:unidades", "p1:acero_en_losa:total_de_barras"} <= {d["campo_afectado"] for d in _dudas(pid)}
+    assert {"p1:acero_en_losa:unidades", "p1:acero_en_losa:total_de_barras"} <= {d["campo"] for d in _dudas(pid)}
 
 
 # ---------- Idempotencia, campos confirmados y choques con el UNIQUE ----------
@@ -374,7 +403,7 @@ def test_un_choque_con_el_unique_abre_duda_y_no_toca_la_fila(entorno):
     assert res["elementos"]["choque"] == 1 and res["elementos"]["nuevo"] == 1
     fila = _elementos(pid)[("L1", "NIVEL 2")]
     assert fila["uid"] == "manual-1" and json.loads(fila["datos_diseno_json"]) == {"H": "0.40"}
-    duda = next(d for d in _dudas(pid) if d["campo_afectado"] == "clave_unica@NIVEL 2")
+    duda = next(d for d in _dudas(pid) if d["campo"] == "clave_unica@NIVEL 2")
     assert duda["id_elemento"] == "L1" and "manual-1" in duda["descripcion_pregunta"]
 
 
@@ -400,7 +429,7 @@ def test_zapata_de_muro_lindero_propone_sus_filas_con_nivel_y_ejes_pendientes(en
     assert json.loads(z["datos_diseno_json"]) == {"B": "0.80", "h": "0.30", "Df": "1.00", "ACERO Ast": 'Ø 3/8" @ 0.10',
                                                   "ACERO Asl": '5 Ø 3/8"'}
     assert _tabla(c, pid, "p1:zapata_muro_lindero")["resultado"] == "verde"
-    campos = {d["campo_afectado"] for d in _dudas(pid) if d["id_elemento"] == 'ZAPATA MURO LINDERO 8"'}
+    campos = {d["campo"] for d in _dudas(pid) if d["id_elemento"] == 'ZAPATA MURO LINDERO 8"'}
     assert {f"nivel_rango@{PENDIENTE}", f"ejes@{PENDIENTE}"} <= campos  # lo que la tabla no da, pendiente + duda
 
 
