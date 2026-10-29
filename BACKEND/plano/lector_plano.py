@@ -277,6 +277,30 @@ def tabla_zapata_lindero(doc, nombre, pagina: int) -> Optional[Dict]:
     return {"tabla": "zapata_muro_lindero", "fuente": _fuente(nombre, pagina, ancla["rect"], _hoja_de(doc, pagina)), **r}
 
 
+_RE_ANCLA_ALIGERADA = re.compile(r"^TABLA DE LOSA ALIGERADA \((.+)\)$")
+COLUMNAS_LOSA_ALIGERADA = ["Losa", "AsxC", "AsxB", "AsyC", "AsyB", "Ht(m)", "HB(m)"]
+
+
+@_con_documento
+def tablas_losa_aligerada(doc, nombre, pagina: int) -> List[Dict]:
+    """
+    (T6n) Variante de P16: 'TABLA DE LOSA ALIGERADA (E9)', una por planta (puede haber varias en la hoja). Filas
+    por losa (L1, L2…) con Asx/Asy en franja central (C) y de borde (B), Ht y HB. El nivel entre paréntesis se
+    devuelve tal cual (`nivel_impreso`); no se traduce.
+    """
+    lineas = _lineas(doc[pagina - 1])
+    hoja = _hoja_de(doc, pagina)
+    out = []
+    for ancla in sorted(lineas, key=lambda l: (l["rect"].y0, l["rect"].x0)):
+        m = _RE_ANCLA_ALIGERADA.match(" ".join(ancla["texto"].split()))
+        if not m:
+            continue
+        r = _tabla_por_encabezado(lineas, ancla, COLUMNAS_LOSA_ALIGERADA, "Losa", (60, 320), 260)
+        out.append({"tabla": "losa_aligerada", "nivel_impreso": m.group(1).strip(),
+                    "fuente": _fuente(nombre, pagina, ancla["rect"], hoja), **r})
+    return out
+
+
 _RE_RANGO = re.compile(r"^(FUND\.?|E-?\d{1,2})\s*@\s*(E-?\d{1,2}|TECHO)$", re.I)
 _RE_FC = re.compile(r"^(\d{3})\s*Kg\s*/\s*cm\s*2?$", re.I)
 

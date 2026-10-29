@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
 from obras import planos_vigentes, router as router_obras
+from plano.extractor import router as router_extractor
 from visor import router as router_visor
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
@@ -147,6 +148,7 @@ def procesar_cola():
 
 app.include_router(router_obras)  # Etapa 2 · T4n: crear obra, planos y datos del usuario
 app.include_router(router_visor)  # Etapa 2 · T5n: visor del vectorial y recuadros
+app.include_router(router_extractor)  # Etapa 2 · T6n: extractor de las tablas de aplicación del vectorial
 
 
 # Se monta al final para que /api/* conserve prioridad. Un solo servidor local entrega
