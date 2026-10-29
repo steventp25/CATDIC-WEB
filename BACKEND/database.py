@@ -229,6 +229,29 @@ def inicializar_bd():
     );
     """)
 
+    # 10. TABLAS LEÍDAS DEL VECTORIAL (Etapa 2 · T6n): resultado de las comprobaciones de cada tabla (verde / rojo),
+    #     que T7n usa para confirmar por lote. Una fila por tabla de un plano; se reescribe al volver a extraer.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tablas_extraidas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        plano_id INTEGER NOT NULL REFERENCES planos(id) ON DELETE CASCADE,
+        clave TEXT NOT NULL,                 -- 'p26:acero_en_losa', 'p10:losa_aligerada:E9'
+        tabla TEXT NOT NULL,                 -- acero_en_losa | zapata_muro_lindero | fc_por_rango | losa_aligerada
+        pagina INTEGER NOT NULL,
+        hoja TEXT NOT NULL,
+        nivel_rango TEXT NOT NULL,
+        resultado TEXT NOT NULL CHECK(resultado IN ('verde', 'rojo')),
+        comprobaciones_json TEXT NOT NULL,   -- [{comprobacion, ok, detalle}]
+        filas_json TEXT NOT NULL,            -- las filas tal como se leyeron, con el bbox de cada celda
+        elementos_json TEXT NOT NULL DEFAULT '[]',  -- uid de los elementos propuestos desde esta tabla
+        fuente_json TEXT NOT NULL,
+        extraido_por TEXT NOT NULL,
+        extraido_en TEXT NOT NULL,
+        UNIQUE(plano_id, clave)
+    );
+    """)
+
     conn.commit()
     conn.close()
 
