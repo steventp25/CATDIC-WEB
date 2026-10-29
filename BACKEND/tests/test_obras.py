@@ -285,6 +285,8 @@ def test_equivalencias_y_losas_quedan_confirmadas_con_auditoria_y_cierran_su_dud
     ("equivalencia_nivel", {"clave": "SOTANO", "valor": "x"}, "E-n"), ("losa_tipo", {"clave": "L1", "valor": "D"}, "A, B o C"),
     ("losa_tipo", {"clave": "X1", "valor": "A"}, "L#"), ("hoja_par", {"clave": "99", "valor": "1"}, "entre 1 y 3"),
     ("hoja_par", {"clave": "1", "valor": "9"}, "entre 1 y 2"), ("otro", {"clave": "a", "valor": "b"}, "tipo de dato"),
+    ("techo", {"clave": "4", "valor": "TECHO"}, "entre 1 y 3"), ("techo", {"clave": "DE TECHO", "valor": "TECHO"}, "entre 1 y 3"),
+    ("techo", {"clave": "1", "valor": "X" * 61}, "demasiado largo"),
     ("equivalencia_nivel", {"clave": "E-1", "valor": ""}, "clave y valor")])
 def test_datos_invalidos_no_se_guardan(entorno, tipo, item, texto):
     c, _ = entorno
@@ -305,6 +307,31 @@ def test_emparejamiento_de_hojas_con_las_de_mas_y_sin_planos_no_se_puede(entorno
     assert r.status_code == 200 and r.json()["dudas_cerradas"] == 1
     assert {(d["clave"], d["valor"]) for d in c.get(f"/api/proyectos/{pid}/datos-obra").json()["datos"]["hoja_par"]} == {
         ("1", "1"), ("2", "2"), ("3", "sin pareja")}
+
+
+def test_techo_pagina_del_vectorial_a_nivel_confirmado_con_auditoria(entorno):
+    c, _ = entorno
+    pid = _nueva_obra(c)["id"]
+    assert _guardar(c, pid, "techo", [{"clave": "2", "valor": "TECHO"}]).status_code == 409   # sin planos
+    _subir(c, pid)                                   # vectorial de 3 hojas
+    dudas_antes = {d["campo_afectado"] for d in c.get(f"/api/proyectos/{pid}/datos-obra").json()["dudas_abiertas"]}
+    r = _guardar(c, pid, "techo", [{"clave": "02", "valor": "TECHO"}, {"clave": "3", "valor": "TECHO  ASCENSOR"}], completo=True)
+    assert r.status_code == 200 and r.json()["guardados"] == 2 and r.json()["dudas_cerradas"] == 0
+    datos = c.get(f"/api/proyectos/{pid}/datos-obra").json()
+    assert {(d["clave"], d["valor"], d["estado"], d["fuente"]) for d in datos["datos"]["techo"]} == {
+        ("2", "TECHO", "confirmado", "usuario"), ("3", "TECHO ASCENSOR", "confirmado", "usuario")}
+    # `techo` no cierra ninguna de las 3 dudas de la obra de T4n
+    assert {d["campo_afectado"] for d in datos["dudas_abiertas"]} == dudas_antes == {
+        "emparejamiento_hojas", "equivalencias_en_nivel", "losas_tipo"}
+    _guardar(c, pid, "techo", [{"clave": "3", "valor": "TECHO CUARTO DE MAQUINAS"}])
+    ultimo = json.loads(_bd("SELECT detalle_json FROM auditoria WHERE accion = 'GUARDAR_DATOS_OBRA' ORDER BY id")[-1]["detalle_json"])
+    assert ultimo["tipo"] == "techo" and ultimo["datos"] == [
+        {"clave": "3", "anterior": "TECHO ASCENSOR", "nuevo": "TECHO CUARTO DE MAQUINAS"}]
+    # un lote con una página que no existe no guarda nada, ni las válidas
+    r = _guardar(c, pid, "techo", [{"clave": "1", "valor": "TECHO"}, {"clave": "9", "valor": "TECHO"}])
+    assert r.status_code == 422
+    assert {d["clave"]: d["valor"] for d in c.get(f"/api/proyectos/{pid}/datos-obra").json()["datos"]["techo"]} == {
+        "2": "TECHO", "3": "TECHO CUARTO DE MAQUINAS"}
 
 
 # ---------- Tablero y migración ----------
