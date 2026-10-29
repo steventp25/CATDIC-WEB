@@ -10,6 +10,7 @@ import base64
 import html
 import io
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -384,23 +385,97 @@ def nombre_archivo(proyecto: Dict, visita: Dict) -> str:
     elementos = re.sub(r'[<>:"/\\|?*]', " ", visita["elementos_txt"])  # solo se limpian los inválidos de Windows
     elementos = " ".join(elementos.split())
     nombre = re.sub(r'[<>:"/\\|?*]', " ", proyecto["nombre"])
-    return f"{' '.join(nombre.split())} - STP - {elementos} {visita['clase']} - {visita['fecha'].replace('/', '-')}.pdf"
+    # Con varias visitas (T7b) el nombre lleva la fecha de la última y su clase; con una sola, las de esa visita
+    clase = visita.get("clase_nombre", visita["clase"])
+    fecha = visita.get("fecha_nombre", visita["fecha"])
+    return f"{' '.join(nombre.split())} - STP - {elementos} {clase} - {fecha.replace('/', '-')}.pdf"
 
 
-def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_salida=None,
+def _nivel_de(visita: Dict) -> Optional[str]:
+    n = visita.get("nivel")
+    return None if _vacio(n) else " ".join(str(n).upper().split())
+
+
+def _unir_visitas(visitas: List[Dict]) -> Tuple[Optional[Dict], List[str]]:
+    """
+    T7b: junta las visitas de UN mismo nivel (parcial + completiva) en la visita que se imprime en la portada y la
+    hoja de inspección. Devuelve (visita_unida, errores). Las visitas quedan ordenadas por fecha (estable).
+    Con una sola visita devuelve esa misma visita, sin tocar nada.
+    """
+    if len(visitas) == 1:
+        return visitas[0], []
+    errores = []
+    ids = [v.get("id") for v in visitas]
+    if any(_vacio(i) for i in ids) or len(set(ids)) != len(ids):
+        errores.append(f"Con varias visitas, cada una necesita un 'id' propio y distinto ({PENDIENTE}).")
+    niveles = {_nivel_de(v) for v in visitas}
+    if None in niveles:
+        errores.append(f"Con varias visitas, cada una necesita su 'nivel' para comprobar que son del mismo nivel ({PENDIENTE}).")
+    elif len(niveles) > 1:
+        errores.append("Las visitas son de niveles distintos (" + " / ".join(sorted(niveles)) +
+                       "): un STP-MIVED junta solo las visitas de un mismo nivel.")
+    if errores:
+        return None, errores
+    ordenadas = sorted(visitas, key=lambda v: datetime.strptime(v["fecha"], "%d/%m/%Y"))
+
+    def unicas(campo):
+        return list(dict.fromkeys(str(v[campo]) for v in ordenadas))
+
+    numeros = list(dict.fromkeys(str(v["numero_inspeccion"]) for v in ordenadas
+                                 if not _vacio(v.get("numero_inspeccion"))))
+    ultima = ordenadas[-1]
+    unida = dict(ultima)
+    unida.update(
+        id=" + ".join(str(v["id"]) for v in ordenadas),
+        fecha=" y ".join(unicas("fecha")),
+        clase=" y ".join(unicas("clase")),
+        elementos_txt=" / ".join(unicas("elementos_txt")),
+        numero_inspeccion=" y ".join(numeros),
+        discrepancias_abiertas=[d for v in ordenadas for d in (v.get("discrepancias_abiertas") or [])],
+        fecha_nombre=ultima["fecha"], clase_nombre=ultima["clase"],
+        visitas=ordenadas)
+    return unida, []
+
+
+def generar_stp_mived(proyecto: Dict, visita, fichas: List[Dict], carpeta_salida=None,
                       usuario: Optional[str] = None) -> Dict:
     """
-    Genera el STP-MIVED de una visita. Devuelve {"ok", "ruta", "errores", "dudas", "discrepancias"}.
+    Genera el STP-MIVED de una visita o, (T7b), de varias visitas del mismo nivel: `visita` es un dict o una lista
+    de dicts (con 'id' y 'nivel') y cada ficha trae 'visita_id' con la visita de la que sale.
+    Devuelve {"ok", "ruta", "errores", "dudas", "discrepancias"}.
     Si hay cualquier error o duda bloqueante no se escribe ningún PDF. Las dudas no bloqueantes (p. ej. una
     fila de OBRA sin dato) se devuelven pero el PDF se genera con la celda vacía.
     """
     resultado = {"ok": False, "ruta": None, "errores": [], "dudas": [], "discrepancias": [], "excluidos": []}
-    dudas = _errores_cabecera(proyecto, visita)
+    lista = list(visita) if isinstance(visita, (list, tuple)) else [visita]
+    if not lista:
+        resultado["errores"].append(f"No se indicó ninguna visita ({PENDIENTE}).")
+        return resultado
+    dudas = _errores_cabecera(proyecto, lista[0])
+    for extra in lista[1:]:  # el proyecto ya se comprobó una vez; de las demás visitas solo sus campos
+        dudas.extend(d for d in _errores_cabecera(proyecto, extra) if d["campo_afectado"].startswith("visita."))
+    por_id = {}
+    if not dudas:
+        visita, errores_unir = _unir_visitas(lista)
+        if errores_unir:
+            resultado["errores"].extend(errores_unir)
+            return resultado
+        if len(lista) > 1:
+            por_id = {str(v["id"]): v for v in visita["visitas"]}
+            for ficha in fichas:
+                if str(ficha.get("visita_id")) not in por_id:
+                    resultado["errores"].append(
+                        f"La ficha '{ficha.get('titulo')}' no indica de qué visita sale ('visita_id'): {PENDIENTE}.")
+            if resultado["errores"]:
+                return resultado
+            orden = {i: n for n, i in enumerate(str(v["id"]) for v in visita["visitas"])}
+            fichas = sorted(fichas, key=lambda f: orden[str(f["visita_id"])])  # estable: respeta el orden del log
+    else:
+        visita = lista[0]
     if not fichas:
         dudas.append({"id_elemento": "", "campo_afectado": "fichas",
                       "descripcion_pregunta": f"La visita no trae elementos para el STP-MIVED ({PENDIENTE})."})
     armadas = []
-    tolerancia = visita.get("tolerancia_m")
     if not dudas:
         for ficha in fichas:
             id_el = ficha.get("titulo")
@@ -418,11 +493,13 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
                                                       f"documento: {PENDIENTE}."})
                 resultado["excluidos"].append(id_el)
                 continue
+            de_visita = por_id[str(ficha["visita_id"])] if por_id else visita
+            tolerancia = de_visita.get("tolerancia_m")
             filas, d, aud = _filas_de_ficha(ficha, ficha["tipo_elemento"], kind, tolerancia)
             dudas.extend(d)
             if filas is None:
                 continue
-            aud.update(nombre_proyecto=proyecto["nombre"], fecha=visita["fecha"], tolerancia_visita_m=tolerancia)
+            aud.update(nombre_proyecto=proyecto["nombre"], fecha=de_visita["fecha"], tolerancia_visita_m=tolerancia)
             errores = auditar_datos_ficha_antes_de_renderizar(aud, FORMATO)
             if errores:
                 resultado["errores"].extend(f"{id_el}: {e}" for e in errores)
@@ -432,7 +509,7 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
                               "descripcion_pregunta": f"El elemento no tiene fotos del log ({PENDIENTE}).",
                               "bloquea": True})
                 continue
-            armadas.append((ficha, kind, filas))
+            armadas.append((ficha, kind, filas, de_visita["fecha"]))
             resultado["discrepancias"].extend(filas["discrepancias"])
     discrepancias = resultado["discrepancias"] + list(visita.get("discrepancias_abiertas") or [])
     resultado["dudas"] = dudas
@@ -448,7 +525,7 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
     paginas, num = [_portada(proyecto, visita), _inspeccion(proyecto, visita, _texto_observaciones(visita, discrepancias, pendientes, resultado["excluidos"]))], 1
     carpeta_planos = proyecto["carpeta_planos"]
     try:
-        for ficha, kind, filas in armadas:
+        for ficha, kind, filas, fecha_ficha in armadas:
             prep = [m1_fotos.preparar_foto(p) for p in m1_fotos.seleccionar_para_stp(list(ficha["fotos"]))]
             loc = ficha["localizacion"]
             _exigir_en_planos(loc["pdf"], carpeta_planos, "LOCALIZACION")
@@ -458,7 +535,7 @@ def generar_stp_mived(proyecto: Dict, visita: Dict, fichas: List[Dict], carpeta_
             loc_b64 = _b64(_acotar(loc_img, 1000))
             det_b64 = _b64(_acotar(det_img, 1000))
             grid_b64 = _b64(m1_fotos.armar_cuadricula(prep, *ZONA_FOTOS_PX))
-            paginas.append(_pagina_cmp(proyecto, visita["fecha"], ficha, kind, filas, num, det_b64,
+            paginas.append(_pagina_cmp(proyecto, fecha_ficha, ficha, kind, filas, num, det_b64,
                                        _b64(_acotar(_imagen_foto_obra(prep), 1000))))
             paginas.append(_pagina_fot(proyecto, ficha, num + 1, loc_b64, det_b64, grid_b64))
             num += 2

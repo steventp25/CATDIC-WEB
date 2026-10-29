@@ -448,3 +448,84 @@ def test_una_viga_y_una_zapata_la_hoja_de_inspeccion_nombra_la_zapata_y_separa_l
     assert "CELDAS O MEDIDAS DE OBRA PENDIENTES DE VERIFICAR: 1" in insp  # solo la celda; la zapata no se mezcla
     assert "ACORDE A PLANOS APROBADOS" not in insp
     assert len(_textos(r["ruta"])) == 4  # la zapata no tiene hojas: solo se nombra en la inspección
+
+
+# ---------- T7b: parcial + completiva del mismo nivel en un solo informe ----------
+
+def _dos_visitas():
+    return [_visita(id="v-parcial", fecha="15/10/2026", clase="Parcial", nivel="SOTANO -4"),
+            _visita(id="v-completiva", fecha="20/10/2026", clase="Completivo", nivel="SOTANO -4")]
+
+
+def _fichas_dos_visitas(mundo):
+    return [mundo.ficha_viga(visita_id="v-parcial"), mundo.ficha_losa(visita_id="v-completiva")]
+
+
+def test_t7b_dos_visitas_portada_inspeccion_fichas_y_nombre(mundo, entorno):
+    r = _generar(mundo, entorno, _fichas_dos_visitas(mundo), visita=_dos_visitas())
+    assert r["ok"] and not r["errores"], r
+    portada, insp, cmp1, fot1, cmp2, fot2 = _textos(r["ruta"])
+    assert "15/10/2026 y 20/10/2026" in " ".join(portada.split())
+    assert "15/10/2026 y 20/10/2026" in " ".join(insp.split())
+    assert "VIGAS Y LOSAS SINT - PARCIAL Y COMPLETIVO" in " ".join(insp.split())
+    # cada ficha lleva la fecha de SU visita
+    assert "15/10/2026" in cmp1 and "20/10/2026" not in cmp1
+    assert "20/10/2026" in cmp2 and "15/10/2026" not in cmp2
+    assert "VIGA HORMIGON-VS1" in fot1 and "LOSA NERVADA-LS1" in fot2
+    assert r["ruta"].name == "Proyecto Sintetico - STP - VIGAS Y LOSAS SINT Completivo - 20-10-2026.pdf"
+    assert len(_textos(r["ruta"])) == 2 + 2 * 2
+
+
+def test_t7b_las_fichas_van_en_el_orden_de_las_visitas_y_luego_del_log(mundo, entorno):
+    # Visitas entregadas al revés y fichas mezcladas: salen por fecha de visita y, dentro de ella, en el orden del log
+    fichas = [mundo.ficha_losa(titulo="LOSA-C2", visita_id="v-completiva"),
+              mundo.ficha_viga(titulo="VIGA-P1", visita_id="v-parcial"),
+              mundo.ficha_col(titulo="COLUMNA-P2", visita_id="v-parcial"),
+              mundo.ficha_losa(titulo="LOSA-C1", visita_id="v-completiva")]
+    r = _generar(mundo, entorno, fichas, visita=list(reversed(_dos_visitas())))
+    assert r["ok"], r
+    titulos = [re.search(r"(VIGA-P1|COLUMNA-P2|LOSA-C2|LOSA-C1)", t).group(1) for t in _textos(r["ruta"])[3::2]]
+    assert titulos == ["VIGA-P1", "COLUMNA-P2", "LOSA-C2", "LOSA-C1"]
+    assert "15/10/2026 y 20/10/2026" in " ".join(_textos(r["ruta"])[0].split())
+
+
+def test_t7b_niveles_distintos_es_error_y_no_genera(mundo, entorno):
+    visitas = _dos_visitas()
+    visitas[1]["nivel"] = "SOTANO -3"
+    r = _generar(mundo, entorno, _fichas_dos_visitas(mundo), visita=visitas)
+    assert not r["ok"] and r["ruta"] is None and "niveles distintos" in r["errores"][0]
+    assert not (entorno / "salida").exists()
+
+
+def test_t7b_sin_nivel_o_ficha_sin_visita_no_genera(mundo, entorno):
+    visitas = _dos_visitas()
+    del visitas[0]["nivel"]
+    r = _generar(mundo, entorno, _fichas_dos_visitas(mundo), visita=visitas)
+    assert not r["ok"] and "nivel" in r["errores"][0] and PENDIENTE in r["errores"][0]
+    r = _generar(mundo, entorno, [mundo.ficha_viga(), mundo.ficha_losa(visita_id="v-completiva")], visita=_dos_visitas())
+    assert not r["ok"] and r["ruta"] is None and "visita_id" in r["errores"][0]
+    r = _generar(mundo, entorno, [mundo.ficha_viga(visita_id="otra")], visita=_dos_visitas())
+    assert not r["ok"] and "visita_id" in r["errores"][0]
+
+
+def test_t7b_ids_repetidos_no_generan(mundo, entorno):
+    visitas = _dos_visitas()
+    visitas[1]["id"] = "v-parcial"
+    r = _generar(mundo, entorno, _fichas_dos_visitas(mundo), visita=visitas)
+    assert not r["ok"] and "id" in r["errores"][0]
+
+
+def test_t7b_la_conformidad_considera_las_discrepancias_de_cualquier_visita(mundo, entorno):
+    visitas = _dos_visitas()
+    visitas[0]["discrepancias_abiertas"] = ["VS1: recubrimiento menor"]
+    r = _generar(mundo, entorno, _fichas_dos_visitas(mundo), visita=visitas)
+    assert r["ok"]
+    insp = " ".join(_textos(r["ruta"])[1].split())
+    assert "VS1: recubrimiento menor" in insp and "ACORDE A PLANOS APROBADOS" not in insp
+
+
+def test_t7b_una_sola_visita_queda_igual_en_dict_o_en_lista(mundo, entorno):
+    r1 = _generar(mundo, entorno)
+    r2 = _generar(mundo, entorno, visita=[_visita()])
+    assert r2["ok"] and r2["ruta"].name.replace(" v2", "") == r1["ruta"].name
+    assert [t for t in _textos(r1["ruta"])[:2]] == [t for t in _textos(r2["ruta"])[:2]]
