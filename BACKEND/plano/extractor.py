@@ -169,7 +169,8 @@ def comprobar_espesor(filas: List[Dict]) -> Dict:
 def comprobar_fc(tabla: Dict, equivalencias: Dict[str, str]) -> Tuple[List[Dict], Dict[str, Tuple[str, Dict]]]:
     """
     f'c por rango: valores en kg/cm² razonables, rangos expandidos sin adivinar y sin un mismo E-n con dos f'c
-    distintos. Devuelve (comprobaciones, {E-n: (f'c, fila)}) con los E-n que quedan con un único valor.
+    distintos (salvo el borde entre dos rangos seguidos). Devuelve (comprobaciones, {E-n: (f'c, fila, borde)}) con
+    los E-n que quedan con un único valor; `borde` dice qué fila se usó cuando el E-n cierra un rango y abre otro.
     """
     unidades, rangos, choques = [], [], []
     por_e: Dict[str, List[Tuple[str, Dict]]] = {}
@@ -187,11 +188,21 @@ def comprobar_fc(tabla: Dict, equivalencias: Dict[str, str]) -> Tuple[List[Dict]
                 por_e.setdefault(e, []).append((v, f))
     unicos = {}
     for e, vals in por_e.items():
-        if len({v for v, _ in vals}) > 1:
+        if len({v for v, _ in vals}) == 1:
+            unicos[e] = (*vals[0], None)
+            continue
+        # Regla de borde (Steven): 'E3 @ E10' = 350 y 'E10 @ E16' = 280 → E-10 = 280. El E-n que cierra un rango y
+        # abre otro toma el f'c del que EMPIEZA en él. Cualquier otro solape, o dos que empiezan en él, es choque.
+        empiezan = [(v, f) for v, f in vals if f["expandido"][0] == e]
+        terminan = [(v, f) for v, f in vals if f["expandido"][0] != e and f["expandido"][-1] == e]
+        if empiezan and len(empiezan) + len(terminan) == len(vals) and len({v for v, _ in empiezan}) == 1:
+            v, f = empiezan[0]
+            unicos[e] = (v, f, {"regla": "borde de rango: el E-n que cierra un rango y abre otro toma el f'c del que "
+                                         "empieza en él", "fila_usada": f["rango"]["valor"],
+                                "filas_que_ceden": [g["rango"]["valor"] for _, g in terminan]})
+        else:
             choques.append(f"{e} está en {' y '.join(f['rango']['valor'] for _, f in vals)} con f'c "
                            f"{' y '.join(v for v, _ in vals)}")
-        else:
-            unicos[e] = vals[0]
     vacias = [f"{f['rango']['valor']} sin f'c" for f in tabla["filas"] if _valor(f["fc_kgcm2"]) is None]
     vacias += [f"'{d['texto']}' fuera de la tabla ({d['motivo']})" for d in tabla["descartadas"]]
     return [_comprobacion("celdas_completas", vacias + ([] if tabla["filas"] else ["la tabla no tiene filas"])),
@@ -365,7 +376,11 @@ def _fc_para(prop: Dict, nivel: str, tablas_fc: List[Dict], equivalencias: Dict[
         prop["explicados"].add("fc_kgcm2")
         return
     fila = t["fc_por_e"][es[0]][1]
-    _poner(prop, "fc_kgcm2", vals.pop(), _fuente_celda(t, fila["fc_kgcm2"], "f'c", fila["rango"]["valor"]))
+    fuente = _fuente_celda(t, fila["fc_kgcm2"], "f'c", fila["rango"]["valor"])
+    bordes = {e: t["fc_por_e"][e][2] for e in es if t["fc_por_e"][e][2]}
+    if bordes and fuente:
+        fuente["borde_de_rango"] = bordes
+    _poner(prop, "fc_kgcm2", vals.pop(), fuente)
     prop["niveles_cubiertos"] = es
 
 
@@ -608,8 +623,11 @@ def _resultado(t: Dict) -> str:
 
 def _filas_para_guardar(t: Dict) -> List[Dict]:
     if t["tabla"] == "fc_por_rango":
+        # `cede_a`: E-n de borde que esta fila deja al rango que empieza en él (regla de borde de comprobar_fc)
         return [{"rango": f["rango"], "desde": f["desde"], "hasta": f["hasta"], "fc_kgcm2": f["fc_kgcm2"],
-                 "expandido": f.get("expandido")} for f in t["filas"]]
+                 "expandido": f.get("expandido"),
+                 "cede_a": {e: b["fila_usada"] for e, (_, _, b) in t["fc_por_e"].items()
+                            if b and f["rango"]["valor"] in b["filas_que_ceden"]}} for f in t["filas"]]
     return [{"etiqueta": f["etiqueta"], "celdas": f["celdas"], "pendientes": f["pendientes"]} for f in t["filas"]]
 
 

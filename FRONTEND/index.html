@@ -393,7 +393,8 @@
                     <p class="font-semibold text-white">{{ g.titulo }} <span class="text-xs text-gray-400 font-normal">{{ g.ayuda }}</span></p>
                     <textarea v-model="modalDatos.texto[g.tipo]" rows="4" :data-datos="g.tipo" :placeholder="g.ejemplo" class="w-full bg-[#1a1a1e] border border-[#29292e] rounded px-3 py-2 text-white font-mono text-xs"></textarea>
                     <div class="flex items-center justify-between">
-                        <label class="text-xs text-gray-300"><input type="checkbox" v-model="modalDatos.completo[g.tipo]" class="mr-1.5">Ya escribí todos los de esta lista</label>
+                        <span v-if="g.sinDuda" class="text-xs text-gray-400">Las dudas de esas plantas se cierran al volver a extraer.</span>
+                        <label v-else class="text-xs text-gray-300"><input type="checkbox" v-model="modalDatos.completo[g.tipo]" class="mr-1.5">Ya escribí todos los de esta lista</label>
                         <button @click="guardarDatos(g.tipo)" :disabled="modalDatos.enviando" :data-guardar="g.tipo" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-xs font-bold px-3 py-1.5 rounded">Guardar</button>
                     </div>
                     <p v-if="modalDatos.mensajes[g.tipo]" class="text-xs" :class="modalDatos.errores[g.tipo] ? 'text-red-300' : 'text-green-300'" :data-mensaje="g.tipo">{{ modalDatos.mensajes[g.tipo] }}</p>
@@ -585,10 +586,11 @@
                     { tipo: 'equivalencia_nivel', titulo: 'Equivalencias E-n ↔ nivel', ayuda: '(el plano rotula entrepisos E-1…E-n)', ejemplo: 'E-1 = SOTANO S7\nE-2 = SOTANO S6' },
                     { tipo: 'losa_tipo', titulo: 'Tipo de cada losa (A, B o C)', ayuda: '(la tabla de acero en losa no dice a qué L# corresponde)', ejemplo: 'L1 = A\nL2 = B' },
                     { tipo: 'hoja_par', titulo: 'Emparejamiento de hojas vectorial → sellado', ayuda: '(número de hoja del vectorial = número de hoja del sellado, o «sin pareja»)', ejemplo: '1 = 1\n9 = sin pareja' },
+                    { tipo: 'techo', titulo: 'Nivel de las plantas repetidas', ayuda: '(página del vectorial = nivel; solo para plantas con el mismo título en varias hojas, p. ej. dos «DE TECHO»)', ejemplo: '32 = TECHO\n33 = TECHO ASCENSOR', sinDuda: true },
                 ];
                 const abrirDatosObra = async (p) => {
-                    modalDatos.value = { proyecto_id: p.id, nombre: p.nombre, texto: { equivalencia_nivel: '', losa_tipo: '', hoja_par: '' },
-                        completo: { equivalencia_nivel: false, losa_tipo: false, hoja_par: false }, mensajes: {}, errores: {}, enviando: false };
+                    modalDatos.value = { proyecto_id: p.id, nombre: p.nombre, texto: { equivalencia_nivel: '', losa_tipo: '', hoja_par: '', techo: '' },
+                        completo: { equivalencia_nivel: false, losa_tipo: false, hoja_par: false, techo: false }, mensajes: {}, errores: {}, enviando: false };
                     try {
                         const r = await fetch(`${API}/api/proyectos/${p.id}/datos-obra`);
                         if (!r.ok) return;

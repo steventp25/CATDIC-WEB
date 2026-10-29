@@ -224,18 +224,45 @@ def test_rango_de_nivel_impreso_se_expande_y_toma_el_fc_de_su_rango(entorno):
     assert [r["expandido"] for r in fc["filas"]] == [["E-1", "E-2", "E-3"], ["E-4", "E-5", "E-6"]]
 
 
-def test_un_entrepiso_en_dos_rangos_con_fc_distinto_es_rojo_y_abre_duda(entorno):
+def test_el_borde_entre_dos_rangos_toma_el_fc_del_rango_que_empieza_en_el(entorno):
+    # Regla de Steven: "E3 @ E10" = 350 y "E10 @ E16" = 280 → E-10 queda con 280; no es choque.
     c = entorno
-    fc = (("E1 @ E3", "350 Kg/cm2"), ("E3 @ E6", "280 Kg/cm2"))
-    datos = {"equivalencia_nivel": {"E-3": "NIVEL 2"}, "losa_tipo": {"L1": "A", "L2": "C"}}
+    fc = (("E3 @ E10", "350 Kg/cm2"), ("E10 @ E16", "280 Kg/cm2"))
+    datos = {"equivalencia_nivel": {"E-10": "NIVEL 2"}, "losa_tipo": {"L1": "A", "L2": "C"}}
+    pid = _obra(c, _vectorial(lambda d: _planta_basica(d, fc=fc)), datos)
+    _extraer(c, pid)
+    t = _tabla(c, pid, "p1:fc_por_rango")
+    assert t["resultado"] == "verde"
+    assert next(x for x in t["comprobaciones"] if x["comprobacion"] == "rangos_sin_choque")["ok"]
+    assert t["filas"][0]["cede_a"] == {"E-10": "E10 @ E16"} and t["filas"][1]["cede_a"] == {}
+    l1 = _elementos(pid)[("L1", "NIVEL 2")]
+    assert json.loads(l1["datos_diseno_json"])["fc_kgcm2"] == "280"
+    fuente = json.loads(l1["fuente_json"])["valores"]["fc_kgcm2"]
+    assert fuente["fila"] == "E10 @ E16"
+    assert fuente["borde_de_rango"]["E-10"]["fila_usada"] == "E10 @ E16"
+    assert fuente["borde_de_rango"]["E-10"]["filas_que_ceden"] == ["E3 @ E10"]
+    assert set(json.loads(l1["estado_campos_json"]).values()) == {PENDIENTE_ESTADO}  # sigue sin confirmar (T7n)
+    assert not any("fc_por_rango" in d["campo"] for d in _dudas(pid))
+    # un entrepiso interior de un rango no cambia: E-9 sigue en 350
+    _, por_e = ex.comprobar_fc({"filas": t["filas"], "descartadas": []}, {})
+    assert por_e["E-9"][0] == "350" and por_e["E-9"][2] is None and por_e["E-10"][0] == "280"
+
+
+@pytest.mark.parametrize("fc,e_en_choque", [
+    ((("E3 @ E10", "350 Kg/cm2"), ("E8 @ E12", "280 Kg/cm2")), "E-8"),   # solape real, más allá del borde
+    ((("E3 @ E10", "350 Kg/cm2"), ("E3 @ E6", "280 Kg/cm2")), "E-3"),    # dos rangos que empiezan en el mismo E-n
+])
+def test_un_solape_real_con_fc_distinto_es_rojo_y_abre_duda(entorno, fc, e_en_choque):
+    c = entorno
+    datos = {"equivalencia_nivel": {e_en_choque: "NIVEL 2"}, "losa_tipo": {"L1": "A", "L2": "C"}}
     pid = _obra(c, _vectorial(lambda d: _planta_basica(d, fc=fc)), datos)
     _extraer(c, pid)
     t = _tabla(c, pid, "p1:fc_por_rango")
     assert t["resultado"] == "rojo"
     choque = next(x for x in t["comprobaciones"] if x["comprobacion"] == "rangos_sin_choque")
-    assert not choque["ok"] and "E-3" in choque["detalle"][0]
+    assert not choque["ok"] and any(d.startswith(f"{e_en_choque} ") for d in choque["detalle"])
     assert any(d["campo"] == "p1:fc_por_rango:rangos_sin_choque" for d in _dudas(pid))
-    # la losa en E-3 no recibe ninguno de los dos valores: queda pendiente
+    # la losa en ese E-n no recibe ninguno de los dos valores: queda pendiente
     assert json.loads(_elementos(pid)[("L1", "NIVEL 2")]["datos_diseno_json"])["fc_kgcm2"] == PENDIENTE
 
 

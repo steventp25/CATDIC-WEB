@@ -38,6 +38,8 @@ DUDA_DE_TIPO = {  # tipo de dato del usuario -> campo_afectado de la duda que ci
     "equivalencia_nivel": "equivalencias_en_nivel",
     "losa_tipo": "losas_tipo",
     "hoja_par": "emparejamiento_hojas",
+    # `techo` no cierra ninguna duda de la obra: la de cada planta repetida (T6n:nivel_hoja:pN) la abre el extractor
+    # y se cierra al volver a extraer con el dato.
 }
 _RE_E = re.compile(r"^E-\d{1,2}$")
 _RE_L = re.compile(r"^L\d{1,3}$")
@@ -355,8 +357,14 @@ def _validar_dato(tipo: str, clave: str, valor: str, plano) -> tuple:
         valor = "sin pareja" if valor.lower() == "sin pareja" else str(int(valor))
         clave = str(int(clave))
     elif tipo == "techo":
+        # página del vectorial vigente → nivel de esa planta (plantas con el mismo título impreso en varias hojas)
+        if plano is None:
+            raise ErrorObra("Sube primero los planos de la obra para decir qué nivel es cada planta.", 409)
+        if not clave.isdigit() or not 1 <= int(clave) <= plano["vectorial_paginas"]:
+            raise ErrorObra(f"La página del vectorial '{clave}' debe estar entre 1 y {plano['vectorial_paginas']}.")
         if len(valor) > 60:
             raise ErrorObra("El texto de la planta de techo es demasiado largo.")
+        clave = str(int(clave))
     return clave, valor
 
 
