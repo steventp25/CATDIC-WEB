@@ -29,8 +29,8 @@ def _png_caja() -> bytes:
 
 EXTRA_NO_MARCAR = {
     "FI-01": ["2a", "3a", "5a", "6a"],
-    "FI-02": ["3a", "8a", "8b", "9a", "9b"],  # 8-9: dinteles
-    "FI-03": ["3a", "8a", "8b", "9a", "9b"],  # 8: mampostería, 9: cerramiento y pandereta
+    "FI-02": ["3a", "8a", "8b", "8c", "8d", "9a", "9b", "9c", "9d"],  # 8-9: dinteles (solo si la visita los trae)
+    "FI-03": ["3a", "8a", "8b", "8c", "8d", "8e", "8f", "8g", "9a", "9b", "9c"],  # 8: mampostería; 9: cerramiento
 }
 
 
@@ -44,7 +44,8 @@ ROTULOS_CABECERA = [  # (rótulo, x del rótulo, base, clave, x del valor, base 
 
 
 def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), omitir=(), firmas=True,
-             anotacion=True, cabecera=None, sin_caja=()) -> Path:
+             anotacion=True, cabecera=None, sin_caja=(), fechas_aut=("llena", "libre"), tabla=False,
+             y_filas=(789.9, 809.9, 829.9), hoja_siguiente=False, vacias=0, rayas_obs=False) -> Path:
     """FI sintético: filas con 'Sí'/'No' y su caja en las hojas 1..n-1; observaciones y firmas en la última."""
     doc = pymupdf.open()
     codigos = sorted(FILAS_SI[tipo] | set(EXTRA_NO_MARCAR[tipo]), key=lambda c: (int(re.match(r"\d+", c).group()), c))
@@ -86,17 +87,42 @@ def crear_fi(ruta: Path, tipo: str, nivel: str = "", fecha: str = "", obs=(), om
     pag.insert_text((194.6, 484.8), "13. OBSERVACIONES", fontsize=10.6, fontname="hebo")
     for i, linea in enumerate(obs):
         pag.insert_text((26.8, 502.6 + i * 15.8), linea, fontsize=10.6)
-    pag.insert_text((185.8, 753.7), "14. NOMBRES Y FIRMAS", fontsize=10.6, fontname="hebo")
-    pag.insert_text((298.7, 774.2), "Firma", fontsize=10.6)
+    pag.insert_text((185.8, y_filas[0] - 36.2), "14. NOMBRES Y FIRMAS", fontsize=10.6, fontname="hebo")
+    pag.insert_text((298.7, y_filas[0] - 15.7), "Firma", fontsize=10.6)
     if firmas:
-        for y_base in (789.9, 809.9):
+        # Filas de autorización: "llena" (con cifras), "libre" (con el dd / mm / aaaa impreso) o "vacia" (solo barras)
+        for y_base, estado in zip(y_filas, fechas_aut):
             pag.insert_text((176.5, y_base), "NOMBRE SINT", fontsize=10.6)
-            for x, t in ((466.7, "02"), (500.6, "10"), (540.2, "2026")):
-                pag.insert_text((x, y_base), t, fontsize=10.6)
+            pag.insert_text((487.6, y_base), "/ ", fontsize=10.6)
+            pag.insert_text((518.5, y_base), "/ ", fontsize=10.6)
+            if estado == "llena":
+                for x, t in ((466.7, "02"), (500.6, "10"), (540.2, "2026")):
+                    pag.insert_text((x, y_base), t, fontsize=10.6)
+            elif estado == "libre":
+                for x, t in ((473.2, "dd"), (506.6, "mm"), (546.4, "aaaa")):
+                    pag.insert_text((x, y_base), t, fontsize=10.6)
+    if tabla and firmas:
+        # Tabla de firmas: una línea fina bajo cada fila, borde inferior grueso y verticales hasta el borde
+        filas_y = list(y_filas[:len(fechas_aut)])
+        filas_y += [filas_y[-1] + 20.0 * (k + 1) for k in range(vacias)]  # filas vacías del bloque de inspectores
+        arriba = filas_y[0] - 14
+        fondo_y = filas_y[-1] + 5
+        for i, y_base in enumerate(filas_y[:-1]):
+            # con filas vacías, desde la última fecha hay celda combinada "Inspectores": las rayas arrancan en x=163.3
+            x0 = 163.3 if vacias and i >= len(fechas_aut) - 1 else 16.0
+            pag.draw_rect(pymupdf.Rect(x0, y_base + 5, 578.3, y_base + 5.9), color=None, fill=(0, 0, 0))
+        pag.draw_rect(pymupdf.Rect(16.0, fondo_y, 580.1, fondo_y + 1.8), color=None, fill=(0, 0, 0))
+        for x0, x1 in ((14.2, 16.0), (162.4, 163.3), (304.2, 305.2), (403.2, 404.2), (468.1, 469.1), (578.3, 580.1)):
+            pag.draw_rect(pymupdf.Rect(x0, arriba, x1, fondo_y), color=None, fill=(0, 0, 0))
     if anotacion:
         a = pag.add_rect_annot(pymupdf.Rect(329.6, 796.5, 365.8, 816.2))
         a.set_info(title="Inspector")
         a.update()
+    if rayas_obs:  # rayas de la tabla de observaciones: una bajo cada renglón
+        for i in range(9):
+            pag.draw_rect(pymupdf.Rect(16.0, 506.6 + i * 15.8, 578.3, 507.5 + i * 15.8), color=None, fill=(0, 0, 0))
+    if hoja_siguiente:
+        doc.new_page(width=595.32, height=841.92)
     doc.save(str(ruta))
     doc.close()
     return ruta
@@ -226,6 +252,59 @@ def test_marca_los_si_obligatorios_y_nunca_mamposteria_ni_dinteles_error_17(ento
     assert all(m.x0 < 530 for _, m in marcas)  # jamás una marca en "No"
 
 
+def _codigos_marcados(ruta: Path):
+    doc = pymupdf.open(str(ruta))
+    rotulos = [(i, s["bbox"][1], s["bbox"][3], re.match(r"^(\d{1,2}[a-z])\.", s["text"]).group(1))
+               for i, p in enumerate(doc) for b in p.get_text("dict")["blocks"] for l in b.get("lines", [])
+               for s in l["spans"] if s["bbox"][0] < 40 and re.match(r"^(\d{1,2}[a-z])\.", s["text"])]
+    doc.close()
+    codigos = set()
+    for i, m in _marcas(ruta):
+        for pagina, y0, y1, c in rotulos:
+            if pagina == i and y0 - 3 < (m.y0 + m.y1) / 2 < y1 + 14:
+                codigos.add(c)
+    return codigos
+
+
+FILAS_DINTELES = {"8a", "8b", "8c", "8d", "9a", "9b", "9c", "9d"}
+
+
+@pytest.mark.parametrize("elementos,esperadas", [
+    (["L1", "L2"], set()),
+    (["L1", "DINTEL D1"], FILAS_DINTELES),
+    (["Dinteles de la escalera", "V1"], FILAS_DINTELES),
+])
+def test_fi02_marca_dinteles_solo_si_la_visita_los_incluye(entorno, elementos, esperadas):
+    base = crear_fi(entorno / "FI-02.pdf", "FI-02", nivel=NIVEL, obs=["Anterior."])
+    r = _llamar(entorno, tipo="FI-02", existente=base, elementos=elementos)
+    assert r["ok"], r
+    codigos = _codigos_marcados(r["ruta"])
+    assert codigos & FILAS_DINTELES == esperadas
+    assert codigos >= FILAS_SI["FI-02"] and r["marcas"] == len(FILAS_SI["FI-02"]) + len(esperadas)
+    assert ("dinteles" in " ".join(r["avisos"])) == bool(esperadas)
+
+
+@pytest.mark.parametrize("elementos,esperadas", [
+    (["C1", "M2"], set()),
+    (["C1", "MURO DE CERRAMIENTO EJE 3"], {"9a", "9b", "9c"}),
+    (["Pandereta del eje A"], {"9a", "9b", "9c"}),
+    (["DINTEL D1"], set()),  # un dintel no activa el cerramiento del FI-03
+])
+def test_fi03_marca_cerramiento_solo_si_la_visita_lo_incluye_y_nunca_mamposteria(entorno, elementos, esperadas):
+    base = crear_fi(entorno / "FI-03.pdf", "FI-03", nivel=NIVEL, obs=["Anterior."])
+    r = _llamar(entorno, tipo="FI-03", existente=base, elementos=elementos)
+    assert r["ok"], r
+    codigos = _codigos_marcados(r["ruta"])
+    assert codigos & {"9a", "9b", "9c"} == esperadas
+    assert not codigos & {"8a", "8b", "8c", "8d", "8e", "8f", "8g"}  # MAMPOSTERÍA: nunca
+
+
+def test_fi01_no_marca_dinteles_ni_cerramiento_aunque_se_nombren(entorno):
+    base = crear_fi(entorno / "FI-01.pdf", "FI-01", nivel=NIVEL, obs=["Anterior."])
+    r = _llamar(entorno, tipo="FI-01", existente=base, elementos=["DINTEL D1", "MURO DE CERRAMIENTO"])
+    assert r["ok"] and r["marcas"] == len(FILAS_SI["FI-01"])
+
+
 def test_si_falta_una_fila_obligatoria_no_marca_a_ciegas(entorno):
     base = crear_fi(entorno / "FI-02.pdf", "FI-02", nivel=NIVEL, obs=["x"], omitir=["11c"])
     r = _llamar(entorno, existente=base)
@@ -234,20 +313,218 @@ def test_si_falta_una_fila_obligatoria_no_marca_a_ciegas(entorno):
 
 
 def _palabras_de_firmas(ruta: Path):
+    """(palabra, y) de la zona de fechas de autorización de la última hoja."""
     doc = pymupdf.open(str(ruta))
     try:
-        return [w[4] for w in doc[-1].get_text("words") if w[1] > 770 and w[0] >= 460]
+        return [(w[4], round(w[1])) for w in doc[-1].get_text("words") if w[1] > 770 and w[0] >= 455]
     finally:
         doc.close()
 
 
-def test_las_fechas_de_autorizacion_anteriores_se_conservan_y_no_se_escribe_ninguna_nueva(entorno, existente):
+def test_la_fecha_de_autorizacion_va_en_la_siguiente_fila_libre_y_las_anteriores_se_conservan(entorno, existente):
     r = _llamar(entorno, existente=existente)
-    assert {"02", "10", "2026"} <= set(_palabras_de_firmas(r["ruta"]))  # histórico de visitas anteriores
-    # Un FI en blanco no recibe ninguna fecha de autorización nueva
-    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", firmas=False)
-    r2 = _llamar(entorno, en_blanco=blanco)
-    assert r2["ok"] and not [w for w in _palabras_de_firmas(r2["ruta"]) if re.fullmatch(r"\d{2}|\d{4}", w)]
+    assert r["ok"], r
+    palabras = _palabras_de_firmas(r["ruta"])
+    fila1 = sorted(w for w, y in palabras if y < 800)
+    fila2 = sorted(w for w, y in palabras if y >= 800)
+    assert {"02", "10", "2026"} <= set(fila1)  # la fila llena de una visita anterior, intacta
+    assert {"15", "10", "2026"} <= set(fila2) and not {"dd", "mm", "aaaa"} & set(fila2)  # la de esta visita
+
+
+def test_una_fila_con_solo_barras_tambien_es_libre_y_se_usa_la_primera(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "vacia", "libre"))
+    r = _llamar(entorno, existente=base)
+    assert r["ok"], r
+    palabras = _palabras_de_firmas(r["ruta"])
+    assert {"15", "10", "2026"} <= {w for w, y in palabras if 796 <= y < 816}  # la 2.ª fila (la 1.ª libre)
+    assert {"dd", "mm", "aaaa"} <= {w for w, y in palabras if y >= 816}        # la 3.ª sigue libre
+
+
+def test_sin_fila_libre_es_error_y_no_se_sobrescribe_ninguna(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"))
+    r = _llamar(entorno, existente=base)
+    assert not r["ok"] and r["ruta"] is None and "ninguna fila libre" in r["errores"][0]
+    assert not (entorno / "salida").exists()
+
+
+def _palabras_en(ruta: Path, pagina: int):
+    doc = pymupdf.open(str(ruta))
+    try:
+        return [(w[4], w[1], w[3]) for w in doc[pagina].get_text("words")]
+    finally:
+        doc.close()
+
+
+def _lineas_anchas(ruta: Path, pagina: int):
+    doc = pymupdf.open(str(ruta))
+    try:
+        return sorted(r.y0 for d in doc[pagina].get_drawings() for it in d["items"] if it[0] == "re"
+                      for r in [pymupdf.Rect(it[1])] if r.width >= 540 and r.height <= 2.5)
+    finally:
+        doc.close()
+
+
+def test_sin_fila_libre_agrega_una_fila_nueva_debajo_de_la_ultima_con_la_geometria_de_la_anterior(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                    tabla=True, y_filas=(600.0, 620.0))
+    hash_antes = _hash(base)
+    lineas_antes = _lineas_anchas(base, len(pymupdf.open(str(base))) - 1)
+    r = _llamar(entorno, existente=base)
+    assert r["ok"] and r["fila_agregada"], r
+    assert _hash(base) == hash_antes
+    assert any("fila nueva" in a for a in r["avisos"])
+    ultima = len(pymupdf.open(str(r["ruta"]))) - 1
+    nuevas = [y for y in _lineas_anchas(r["ruta"], ultima) if y > 625]
+    assert len(nuevas) == 1 and abs(nuevas[0] - (lineas_antes[-1] + 1.8 + 20)) < 1.0  # misma altura de fila (20 pt)
+    palabras = _palabras_en(r["ruta"], ultima)
+    nuevas_p = {w for w, y0, y1 in palabras if y0 > 626}
+    assert {"15", "10", "2026"} <= nuevas_p and "dd" not in nuevas_p
+    # misma posición horizontal que la fecha de la fila anterior
+    doc = pymupdf.open(str(r["ruta"]))
+    xs = {w[4]: w[0] for w in doc[ultima].get_text("words") if w[4] in ("02", "10", "2026", "15")}
+    doc.close()
+    assert abs(xs["15"] - xs["02"]) < 1.5
+    assert len(_marcas(r["ruta"])) == len(FILAS_SI["FI-02"])  # y todo lo demás sigue como antes
+
+
+def test_antes_de_agregar_una_fila_se_usa_la_primera_fila_vacia_del_bloque_de_inspectores(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                    tabla=True, y_filas=(600.0, 620.0), vacias=2)
+    antes = _lineas_anchas(base, len(pymupdf.open(str(base))) - 1)
+    r = _llamar(entorno, existente=base)
+    assert r["ok"] and not r["fila_agregada"], r
+    assert any("primera fila vacía" in a for a in r["avisos"])
+    ultima = len(pymupdf.open(str(r["ruta"]))) - 1
+    assert _lineas_anchas(r["ruta"], ultima) == antes  # la tabla no cambia: no se agregó ninguna fila
+    nuevas = {w for w, y0, y1 in _palabras_en(r["ruta"], ultima) if 625 < y0 < 646}  # 1.ª fila vacía: 625-645
+    assert {"15", "10", "2026"} <= nuevas
+    assert not {"15"} & {w for w, y0, y1 in _palabras_en(r["ruta"], ultima) if y0 > 646}  # la 2.ª sigue vacía
+
+
+def test_la_fila_nueva_que_no_cabe_va_en_la_hoja_siguiente(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                    tabla=True, hoja_siguiente=True)
+    r = _llamar(entorno, existente=base)
+    assert r["ok"] and r["fila_agregada"], r
+    assert any("hoja siguiente" in a for a in r["avisos"])
+    doc = pymupdf.open(str(r["ruta"]))
+    siguiente = doc[len(doc) - 1]
+    assert {"15", "10", "2026"} <= {w[4] for w in siguiente.get_text("words")}
+    assert not {"15"} & {w[4] for w in doc[len(doc) - 2].get_text("words") if w[1] > 826}
+    doc.close()
+
+
+def test_la_fila_nueva_sin_espacio_ni_hoja_siguiente_es_error_y_no_escribe(entorno):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"), tabla=True)
+    r = _llamar(entorno, existente=base)
+    assert not r["ok"] and r["ruta"] is None and "no cabe" in r["errores"][0]
+    assert not (entorno / "salida").exists()
+    # con hoja siguiente pero ocupada tampoco hay sitio
+    base2 = crear_fi(entorno / "base2.pdf", "FI-02", nivel=NIVEL, obs=["x"], fechas_aut=("llena", "llena"),
+                     tabla=True, hoja_siguiente=True)
+    doc = pymupdf.open(str(base2))
+    doc[len(doc) - 1].insert_text((60, 120), "CONTENIDO PREVIO", fontsize=10.6)
+    ruta = entorno / "base3.pdf"
+    doc.save(str(ruta))
+    doc.close()
+    r = _llamar(entorno, existente=ruta)
+    assert not r["ok"] and "no cabe" in r["errores"][0]
+
+
+def _rayas_de_observaciones(ruta: Path):
+    """Rectángulos de dibujo entre OBSERVACIONES y NOMBRES Y FIRMAS (las rayas de la tabla de observaciones)."""
+    doc = pymupdf.open(str(ruta))
+    try:
+        for p in doc:
+            spans = [s for b in p.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+            cab = next((s for s in spans if re.match(r"^\d{1,2}\.\s*OBSERVACIONES", s["text"].strip(), re.I)), None)
+            fir = next((s for s in spans if re.match(r"^\d{1,2}\.\s*NOMBRES Y FIRMAS", s["text"].strip(), re.I)), None)
+            if cab and fir:
+                return sorted((round(r.x0, 1), round(r.y0, 1), round(r.x1, 1), round(r.y1, 1))
+                              for d in p.get_drawings() for it in d["items"] if it[0] == "re"
+                              for r in [pymupdf.Rect(it[1])] if cab["bbox"][3] < r.y0 < fir["bbox"][1])
+        return []
+    finally:
+        doc.close()
+
+
+@pytest.mark.parametrize("cierre", ["Todo segun los planos estructurales."])
+def test_mover_el_cierre_no_corta_ninguna_raya(entorno, cierre):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, rayas_obs=True,
+                    obs=["Observacion anterior UNO.", "Observacion anterior DOS.", "", cierre])
+    rayas_antes = _rayas_de_observaciones(base)
+    assert len(rayas_antes) == 9
+    r = _llamar(entorno, existente=base, visita=_visita(clase="Parcial"))
+    assert r["ok"] and r["cierre_movido"] == [cierre], r
+    assert _rayas_de_observaciones(r["ruta"]) == rayas_antes  # ni una raya cortada o tapada
+    texto = fi_mived.limpiar_extraido(" ".join(p.get_text() for p in pymupdf.open(str(r["ruta"]))))
+    assert texto.index("15/10/2026 - PARCIAL") < texto.index(cierre)  # el cierre quedó después de la observación nueva
+    doc = pymupdf.open(str(r["ruta"]))  # y ningún relleno blanco quedó en la página
+    assert not [d for p in doc for d in p.get_drawings() if d.get("fill") == (1.0, 1.0, 1.0)]
+    doc.close()
+
+
+def _lineas_de_texto(ruta: Path):
+    texto = fi_mived.limpiar_extraido(chr(10).join(p.get_text() for p in pymupdf.open(str(ruta))))
+    return [" ".join(l.split()) for l in texto.splitlines() if l.strip()]
+
+
+def _encadenar(entorno, visitas):
+    base = crear_fi(entorno / "base.pdf", "FI-02", nivel=NIVEL, obs=["Observacion anterior.", "",
+                                                                   "Todo segun los planos estructurales."],
+                    fechas_aut=("llena", "libre", "libre"))
+    actual = base
+    for v in visitas:
+        r = _llamar(entorno, existente=actual, visita=_visita(**v))
+        assert r["ok"], r
+        actual = r["ruta"]
+    return _lineas_de_texto(actual)
+
+
+def test_completivo_y_luego_parcial_el_conforme_no_se_mueve_al_final(entorno):
+    lineas = _encadenar(entorno, [{"fecha": "15/10/2026", "clase": "Completivo"},
+                                  {"fecha": "20/10/2026", "clase": "Parcial"}])
+    i_comp = next(i for i, l in enumerate(lineas) if "15/10/2026 - COMPLETIVO" in l)
+    i_parc = next(i for i, l in enumerate(lineas) if "20/10/2026 - PARCIAL" in l)
+    i_todo = next(i for i, l in enumerate(lineas) if l.startswith("Todo segun"))
+    assert lineas[i_comp + 1] == "CONFORME A PLANOS APROBADOS"          # el CONFORME queda junto a su visita
+    assert i_comp < i_parc < i_todo and i_todo == i_parc + 1  # la Parcial queda justo antes del cierre general
+    assert lineas.count("CONFORME A PLANOS APROBADOS") == 1              # y la Parcial no queda declarada conforme
+    assert "CONFORME A PLANOS APROBADOS" not in lineas[i_parc:]
+
+
+def test_dos_completivos_tienen_un_conforme_por_visita_sin_duplicados(entorno):
+    lineas = _encadenar(entorno, [{"fecha": "15/10/2026", "clase": "Completivo"},
+                                  {"fecha": "20/10/2026", "clase": "Completivo"}])
+    assert lineas.count("CONFORME A PLANOS APROBADOS") == 2
+    for fecha in ("15/10/2026", "20/10/2026"):
+        i = next(i for i, l in enumerate(lineas) if f"{fecha} - COMPLETIVO" in l)
+        assert lineas[i + 1] == "CONFORME A PLANOS APROBADOS"
+    assert [l for l in lineas if l.startswith("Todo segun")] == ["Todo segun los planos estructurales."]
+
+
+def test_el_cierre_anterior_queda_al_final_con_el_mismo_texto(entorno):
+    cierre = "Todo segun los planos estructurales."
+    base = crear_fi(entorno / "con_cierre.pdf", "FI-02", nivel=NIVEL,
+                    obs=["Observacion anterior UNO.", "Observacion anterior DOS.", "", cierre])
+    r = _llamar(entorno, existente=base, visita=_visita(clase="Completivo"))
+    assert r["ok"], r
+    assert r["cierre_movido"] == [cierre] and "se movió" in " ".join(r["avisos"])
+    doc = pymupdf.open(str(r["ruta"]))
+    palabras = doc[-1].get_text("words")
+    doc.close()
+
+    def y_de(texto):
+        return min(w[1] for w in palabras if fi_mived.limpiar_extraido(w[4]) == texto)
+    assert y_de("UNO.") < y_de("DOS.") < y_de("PARCIAL:".replace("PARCIAL", "COMPLETIVO")) < y_de("Todo")
+    assert y_de("CONFORME") < y_de("Todo")  # la conformidad nueva también va antes del cierre anterior
+    texto = " ".join(_texto(r["ruta"]).split())
+    assert texto.count(cierre) == 1  # no se duplica ni se pierde
+
+
+def test_sin_cierre_anterior_no_se_mueve_nada(entorno, existente):
+    r = _llamar(entorno, existente=existente)
+    assert r["ok"] and r["cierre_movido"] == []
 
 
 # ---------- P5 y #18 ----------
@@ -298,7 +575,7 @@ def _valor_en_fila(ruta: Path, rotulo: str, lado_der: bool = False) -> str:
 
 
 def test_la_plantilla_en_blanco_recibe_los_5_campos_del_proyecto(entorno):
-    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", anotacion=False, firmas=False)
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", anotacion=False, fechas_aut=("libre", "libre"))
     r = _llamar(entorno, en_blanco=blanco)
     assert r["ok"], r
     assert _valor_en_fila(r["ruta"], "Nombre del proyecto") == "Proyecto Sintetico"
@@ -323,7 +600,7 @@ def test_un_valor_ya_escrito_no_se_sobrescribe_y_si_difiere_hay_aviso(entorno):
 
 
 def test_un_valor_muy_largo_se_reduce_o_no_cabe(entorno):
-    blanco = crear_fi(entorno / "blanco.pdf", "FI-02")
+    blanco = crear_fi(entorno / "blanco.pdf", "FI-02", fechas_aut=("libre", "libre"))
     r = _llamar(entorno, en_blanco=blanco, proyecto={**PROYECTO, "direccion_obra": "CALLE LARGUISIMA " * 3})
     assert r["ok"] and "LARGUISIMA" in _valor_en_fila(r["ruta"], "Dirección")
     r2 = _llamar(entorno, en_blanco=blanco, proyecto={**PROYECTO, "direccion_obra": "X" * 400})
@@ -414,8 +691,41 @@ FI_REALES = [
 ]
 
 
+def _limite_tabla_firmas(ruta: Path):
+    """(pagina, y del borde inferior) de la tabla NOMBRES Y FIRMAS: la línea ancha más baja de la hoja de la fecha."""
+    doc = pymupdf.open(str(ruta))
+    try:
+        fechas = [(i, s["origin"][1]) for i, p in enumerate(doc) for b in p.get_text("dict")["blocks"]
+                  for l in b.get("lines", []) for s in l["spans"]
+                  if s["bbox"][0] >= 455 and re.match(r"^(\d{2}/\d{2}/\d{4}|\d{4})$", s["text"].strip())]
+        pagina, base = fechas[-1]
+        anchas = [r for d in doc[pagina].get_drawings() for it in d["items"] if it[0] == "re"
+                  for r in [pymupdf.Rect(it[1])] if r.width >= 540 and r.height <= 2.5 and r.y0 > base]
+        return pagina, max(r.y1 for r in anchas), base
+    finally:
+        doc.close()
+
+
+def _comprobar_fila_vacia_usada(antes: Path, despues: Path):
+    """La fecha cae en la primera fila vacía del bloque de inspectores: la tabla no crece y queda dentro de ella."""
+    pag, fondo_antes, base_antes = _limite_tabla_firmas(antes)
+    pag2, fondo_despues, base_despues = _limite_tabla_firmas(despues)
+    assert pag2 == pag and abs(fondo_despues - fondo_antes) < 0.01   # misma tabla
+    assert base_antes < base_despues < fondo_antes                   # la fecha nueva, bajo la última y dentro de la tabla
+    doc = pymupdf.open(str(despues))
+    try:
+        palabras = {w[4] for w in doc[pag].get_text("words") if base_antes < w[3] <= fondo_antes}
+    finally:
+        doc.close()
+    assert {"15", "10", "2026"} <= palabras or "15/10/2026" in palabras
+
+
 @pytest.mark.parametrize("tipo,archivo,clave,anotaciones_antes", FI_REALES)
 def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, anotaciones_antes):
+    """
+    Solo el FI-02 #12 trae filas de autorización libres (en su 4.ª hoja). El FI-01 #1 y el FI-03 #10 ya tienen todas
+    sus filas llenas: ahí el generador agrega una fila nueva debajo de la última (respuesta "c." de Steven).
+    """
     import shutil
     original = RAIZ_FI / archivo
     if not original.is_file():
@@ -437,6 +747,10 @@ def test_corrida_sobre_una_copia_de_un_fi_real(entorno, tipo, archivo, clave, an
                                ["ELEMENTO SINTETICO 1", "ELEMENTO SINTETICO 2"], existente=copia, usuario="prueba")
     assert r["ok"], r
     assert _hash(original) == hash_antes  # el original no cambió (ni el de la copia de partida)
+    assert _rayas_de_observaciones(copia) == _rayas_de_observaciones(r["ruta"])  # ninguna raya cortada
+    assert r["fila_agregada"] is False  # hay fila libre (FI-02) o fila vacía del bloque de inspectores (FI-01/03)
+    if tipo != "FI-02":
+        _comprobar_fila_vacia_usada(copia, r["ruta"])
     out = pymupdf.open(str(r["ruta"]))
     # Los datos de cabecera que ya traía el FI no se tocan (ni siquiera con otros datos de proyecto)
     cabecera_despues = fi_mived.limpiar_extraido(out[0].get_text("text", clip=pymupdf.Rect(0, 100, 600, 165)))
