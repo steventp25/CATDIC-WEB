@@ -119,7 +119,7 @@ def test_subir_visita_guarda_con_sha256_registra_y_lee(entorno):  # SINTÉTICO
     assert origen["datos_usuario"]["nivel"] == "S-4"
 
     aud = _bd("SELECT * FROM auditoria WHERE accion = 'SUBIR_VISITA'")
-    assert len(aud) == 1 and aud[0]["entidad_id"] == v["id"]
+    assert len(aud) == 1 and aud[0]["entidad_id"] == v["id"] and aud[0]["usuario"] == database.usuario_auditoria()
     detalle = json.loads(aud[0]["detalle_json"])
     assert {a["nombre"]: a["sha256"] for a in detalle["archivos"]} == {"visita.pdf": _sha(pdf), "foto 1.jpg": _sha(foto)}
 
