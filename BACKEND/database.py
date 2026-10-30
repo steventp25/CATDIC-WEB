@@ -277,6 +277,32 @@ def inicializar_bd():
     );
     """)
 
+    # 12. TRABAJOS DEL PROCESADOR DE LA COLA (Etapa 3 · T10a): un trabajo procesa una o varias visitas en segundo
+    #     plano y deja una lista de eventos numerados que la pantalla en vivo (T10b) consulta desde el número N.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS trabajos (
+        id TEXT PRIMARY KEY,
+        tipo TEXT NOT NULL CHECK(tipo IN ('visita', 'cola')),
+        visitas_json TEXT NOT NULL,          -- ids de las visitas, en el orden en que se procesan
+        estado TEXT NOT NULL CHECK(estado IN ('corriendo', 'terminado', 'fallido')),
+        usuario TEXT NOT NULL,
+        creado TEXT NOT NULL,
+        terminado TEXT DEFAULT '',
+        resumen_json TEXT DEFAULT '{}',
+        error TEXT DEFAULT ''
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS trabajo_eventos (
+        trabajo_id TEXT NOT NULL REFERENCES trabajos(id) ON DELETE CASCADE,
+        n INTEGER NOT NULL,                  -- 1, 2, 3… dentro del trabajo
+        tipo TEXT NOT NULL,                  -- visita_inicio | elemento_inicio | elemento_listo | duda | aviso | pdf_generado | visita_fin | fin
+        datos_json TEXT NOT NULL,
+        creado TEXT NOT NULL,
+        PRIMARY KEY (trabajo_id, n)
+    );
+    """)
+
     conn.commit()
     conn.close()
 
