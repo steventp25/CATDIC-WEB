@@ -13,6 +13,10 @@ from test_extractor import (DATOS_COMPLETOS, _dudas, _elementos, _extraer, _hoja
                             _tabla, _vectorial, entorno)
 
 CAMPOS_DE_LA_TABLA = {"H", "Bw1", "Bw2", "h1", "h2", "DIR. X", "DIR. Y", "AS. ADIC."}
+IDENTIDAD = {"id_elemento", "nivel_rango", "ejes", "hoja_plano_origen", "archivo_plano_origen"}
+DEL_USUARIO = {"datos_diseno.tipo_losa"}  # T7n-b: el L#→tipo de "Datos de la obra" llega confirmado
+IDENTIDAD = {"id_elemento", "nivel_rango", "ejes", "hoja_plano_origen", "archivo_plano_origen"}
+DEL_USUARIO = {"datos_diseno.tipo_losa"}  # T7n-b: el L#→tipo de "Datos de la obra" llega confirmado
 
 
 def _sql(consulta, params=()):
@@ -32,6 +36,16 @@ def _estado(pid, id_elemento, nivel="NIVEL 2"):
 def _auditoria(accion):
     return [{**a, "detalle": json.loads(a["detalle_json"])} for a in
             _sql("SELECT * FROM auditoria WHERE accion = ? ORDER BY id", (accion,))]
+
+
+def _sin_confirmar(estado):
+    """Nada confirmado salvo lo que el usuario dio en "Datos de la obra" (T7n-b)."""
+    return not {k for k, v in estado.items() if v == CONFIRMADO} - DEL_USUARIO
+
+
+def _auditoria_lote():
+    """Filas CONFIRMAR_CAMPO del lote o de la Mesa (las del extractor son las del L#→tipo de "Datos de la obra")."""
+    return [a for a in _auditoria("CONFIRMAR_CAMPO") if a["modulo"] == cf.MODULO]
 
 
 def _confirmar(c, pid, tabla, **cuerpo):
@@ -62,14 +76,16 @@ def test_confirmar_una_tabla_verde_confirma_sus_celdas_con_auditoria_por_campo(e
     assert res["confirmados"] == 16 and res["elementos"] == 2 and res["conflictos"] == 0
     for lid in ("L1", "L2"):
         e = _estado(pid, lid)
-        assert {k.removeprefix("datos_diseno.") for k, v in e.items() if v == CONFIRMADO} == CAMPOS_DE_LA_TABLA
-        # lo que no viene de una celda de esta tabla sigue pendiente (f'c de otra tabla, L#→tipo del usuario, ID...)
-        for k in ("datos_diseno.fc_kgcm2", "datos_diseno.tipo_losa", "id_elemento", "nivel_rango", "ejes"):
+        assert {k.removeprefix("datos_diseno.") for k, v in e.items() if v == CONFIRMADO} \
+            == CAMPOS_DE_LA_TABLA | IDENTIDAD | {"tipo_losa"}
+        # lo que no viene de esta tabla ni del usuario sigue pendiente (f'c de otra tabla, tipo de elemento)
+        for k in ("datos_diseno.fc_kgcm2", "tipo_elemento"):
             assert e[k] == PENDIENTE_ESTADO
         pend = set(json.loads(_elementos(pid)[(lid, "NIVEL 2")]["pendientes_json"]))
         assert pend == {k for k, v in e.items() if v != CONFIRMADO}
-    aud = _auditoria("CONFIRMAR_CAMPO")
-    assert len(aud) == 16 and {a["detalle"]["lote"] for a in aud} == {res["lote"]}
+    assert res["identidad_confirmados"] == 10 and res["elementos_identidad"] == 2
+    aud = [a for a in _auditoria("CONFIRMAR_CAMPO") if a["detalle"]["lote"]]
+    assert len(aud) == 26 and {a["detalle"]["lote"] for a in aud} == {res["lote"]}
     h = next(a for a in aud if a["detalle"]["id_elemento"] == "L1" and a["detalle"]["campo"] == "H")
     assert h["detalle"]["valor"] == "0.25" and h["usuario"]
     f = h["detalle"]["fuente"]
@@ -100,7 +116,7 @@ def test_sin_la_confirmacion_explicita_422_y_nada_cambia(entorno):
     t = _tabla(c, pid, "p1:acero_en_losa")
     r = c.post(f"/api/proyectos/{pid}/tablas-extraidas/{t['id']}/confirmar", json={})
     assert r.status_code == 422
-    assert CONFIRMADO not in _estado(pid, "L1").values() and _auditoria("CONFIRMAR_CAMPO") == []
+    assert _sin_confirmar(_estado(pid, "L1")) and _auditoria_lote() == []
 
 
 # ---------- Rechazos (409): rojo y extracción no vigente ----------
@@ -140,7 +156,7 @@ def test_una_fila_de_una_extraccion_anterior_queda_marcada_y_no_se_confirma(ento
     t = _tabla(c, pid, "p1:acero_en_losa")
     assert not t["vigente"] and "extracción anterior" in t["motivos_no_vigente"][0]
     r = c.post(f"/api/proyectos/{pid}/tablas-extraidas/{t['id']}/confirmar", json={"confirmo": True})
-    assert r.status_code == 409 and _auditoria("CONFIRMAR_CAMPO") == []
+    assert r.status_code == 409 and _auditoria_lote() == []
 
 
 def test_otra_revision_o_sha256_no_se_confirma(entorno):
@@ -188,7 +204,7 @@ def test_un_valor_guardado_distinto_de_la_tabla_detiene_el_lote(entorno):
     _sql("UPDATE elementos_diseno SET datos_diseno_json = ? WHERE uid = ?", (json.dumps(datos), l1["uid"]))
     r = _confirmar(c, pid, _tabla(c, pid, "p1:acero_en_losa"))
     assert r.status_code == 409 and "Bw1" in r.json()["detail"]
-    assert CONFIRMADO not in _estado(pid, "L2").values()  # atómico: tampoco L2
+    assert _sin_confirmar(_estado(pid, "L2"))  # atómico: tampoco L2
 
 
 # ---------- Atomicidad y campos ya confirmados ----------
@@ -209,8 +225,8 @@ def test_si_falla_un_campo_no_se_guarda_nada(entorno, monkeypatch):
     with pytest.raises(RuntimeError):
         cf.confirmar_tabla(pid, t["id"], t["extraido_en"], usuario="prueba")
     for lid in ("L1", "L2"):
-        assert CONFIRMADO not in _estado(pid, lid).values()
-    assert _auditoria("CONFIRMAR_CAMPO") == [] and _auditoria("CONFIRMAR_LOTE") == []
+        assert _sin_confirmar(_estado(pid, lid))
+    assert _auditoria_lote() == [] and _auditoria("CONFIRMAR_LOTE") == []
 
 
 def test_un_campo_confirmado_con_otro_valor_no_se_sobrescribe_y_abre_duda(entorno):
@@ -305,7 +321,7 @@ def test_la_mesa_lista_las_dudas_de_obra_y_las_no_confirmables_solo_guardan_la_r
     assert obra["id_elemento"] == "(obra)" and obra["campo_confirmable"] is None
     r = c.patch(f"/api/dudas/{obra['id']}", json={"respuesta": "lo cargo en Datos de la obra"})
     assert r.status_code == 200 and r.json()["valor_aplicado"] is None
-    assert _auditoria("CONFIRMAR_CAMPO") == []
+    assert _auditoria_lote() == []
 
 
 def test_la_mesa_no_sobrescribe_un_campo_ya_confirmado_con_otro_valor(entorno):

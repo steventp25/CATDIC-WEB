@@ -44,6 +44,14 @@ COLUMNAS_NUEVAS_VISITAS = ("clase_detalle_json", "archivos_json", "campos_pendie
 # Etapa 1 · T8: columna añadida con ALTER TABLE (no destructiva, sin reconstruir la tabla)
 COLUMNA_ORIGEN_VISITAS = "origen_datos_json"
 
+USUARIO_AUDITORIA = "steven"  # T7n-b (decisión 5 de Steven): un solo usuario en la auditoría
+
+
+def usuario_auditoria() -> str:
+    """Usuario de las filas nuevas de `auditoria` (lote, Mesa, Datos de la obra y extractor). Las viejas no se tocan."""
+    return USUARIO_AUDITORIA
+
+
 def get_connection():
     # La ruta se resuelve en cada llamada (config / CATDIC_DB_PATH) para poder probar con BD temporal
     conn = sqlite3.connect(config.obtener_db_path())
@@ -249,6 +257,23 @@ def inicializar_bd():
         extraido_por TEXT NOT NULL,
         extraido_en TEXT NOT NULL,
         UNIQUE(plano_id, clave)
+    );
+    """)
+
+    # 11. CERTIFICACIONES DE TABLAS (Etapa 2 · T7n-b, decisión 4): el usuario certifica que una tabla con notas de
+    # modificación ("PLANO ANTERIOR") vale para el plano vigente. Atada al plano y al sha256 del vectorial: si
+    # cambian, la certificación no aplica.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS certificaciones_tabla (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        plano_id INTEGER NOT NULL REFERENCES planos(id) ON DELETE CASCADE,
+        clave TEXT NOT NULL,                 -- clave de tablas_extraidas
+        sha256 TEXT NOT NULL,                -- sha256 del vectorial certificado
+        notas_json TEXT NOT NULL,            -- las notas que el usuario vio
+        certificado_por TEXT NOT NULL,
+        certificado_en TEXT NOT NULL,
+        UNIQUE(plano_id, clave, sha256)
     );
     """)
 
@@ -571,7 +596,7 @@ def migrar_columnas_t4n() -> dict:
     finally:
         conn.close()
 
-def registrar_auditoria(modulo: str, accion: str, entidad_id: str, detalle: dict, usuario: str = "steven"):
+def registrar_auditoria(modulo: str, accion: str, entidad_id: str, detalle: dict, usuario: str = USUARIO_AUDITORIA):
     conn = get_connection()
     conn.execute("""
         INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)

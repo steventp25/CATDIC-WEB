@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from database import get_connection
+from database import get_connection, usuario_auditoria
 from plano import confirmacion
 from reglas_ingenieria import PENDIENTE, _es_fecha_ddmmaaaa_valida
 from sync.escaner_dropbox import SUBRUTA_INFORMES_PROCESADOS
@@ -33,7 +33,6 @@ from sync.sincronizador import (
 
 MODULO_AUDITORIA = "MESA_DUDAS"
 ACCION_AUDITORIA = "RESPONDER_DUDA"
-USUARIO = "steven"
 ORIGEN_MESA = ORIGEN_ESTADO_MESA
 
 # T4b (e), decisión de Steven: la Mesa no acepta Mixta; solo Parcial o Completivo
@@ -237,7 +236,7 @@ def _responder(conn, duda_id: int, respuesta: str, stp: Optional[List[str]]) -> 
         # T7n: una duda del extractor (T6n:) que apunta a un único campo de un elemento confirma ese campo con el
         # valor que escribe Steven (validado; auditoría por campo). Las demás dudas de elemento solo guardan la respuesta.
         try:
-            aplicado = confirmacion.aplicar_respuesta(conn, duda, respuesta, USUARIO)
+            aplicado = confirmacion.aplicar_respuesta(conn, duda, respuesta, usuario_auditoria())
         except confirmacion.ValorInvalido as e:
             raise RespuestaInvalida(str(e)) from None
         if aplicado:
@@ -299,7 +298,7 @@ def _responder(conn, duda_id: int, respuesta: str, stp: Optional[List[str]]) -> 
     conn.execute("""
         INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (ahora, USUARIO, MODULO_AUDITORIA, ACCION_AUDITORIA, str(duda_id), _json(detalle)))
+    """, (ahora, usuario_auditoria(), MODULO_AUDITORIA, ACCION_AUDITORIA, str(duda_id), _json(detalle)))
     return {"duda_id": duda_id, "resuelta": True, "campo": campo, "valor_aplicado": nuevo,
             "visita_id": visita_id, "estado_visita": estado_nuevo}
 
