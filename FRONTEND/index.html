@@ -45,6 +45,27 @@
                 <button @click="avisoObra = ''" class="text-green-300 hover:text-white text-sm" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
             </div>
 
+            <!-- RESULTADO DE SUBIR VISITA / CONECTAR CON DROPBOX (Etapa 2 · T4v) -->
+            <div v-if="resultadoVisitas" class="bg-[#1a1a1e] border border-green-700 rounded-xl px-5 py-4 text-sm" data-resultado-visitas>
+                <div class="flex justify-between items-start">
+                    <p class="font-bold text-green-300"><i class="fa-solid fa-circle-check mr-2"></i>{{ resultadoVisitas.titulo }}</p>
+                    <button @click="resultadoVisitas = null" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <p v-if="resultadoVisitas.resumen" class="text-xs text-gray-300 mt-1">{{ resultadoVisitas.resumen }}</p>
+                <p v-if="!resultadoVisitas.visitas.length" class="text-xs text-gray-400 mt-2">No hay visitas nuevas.</p>
+                <ul class="mt-2 space-y-1.5">
+                    <li v-for="v in resultadoVisitas.visitas" :key="v.id" class="flex flex-wrap items-center gap-2 text-xs" :data-visita-nueva="v.id">
+                        <span class="text-white font-semibold">#{{ v.numero }}</span>
+                        <span class="text-gray-300">{{ v.nombre_carpeta }}</span>
+                        <span class="px-2 py-0.5 rounded border font-medium" :class="claseEstado(v.estado)">{{ v.estado }}</span>
+                        <span v-if="v.lector" class="text-gray-400">{{ v.lector }}</span>
+                        <button v-if="v.dudas" @click="abrirMesaDeVisita(v.id)" :data-abrir-mesa-visita="v.id" class="bg-orange-950 hover:bg-orange-900 border border-orange-600 text-orange-200 px-2 py-0.5 rounded">Mesa de Dudas: {{ v.dudas }}</button>
+                    </li>
+                </ul>
+                <details v-if="resultadoVisitas.avisos.length" class="mt-2 text-xs text-gray-400"><summary class="cursor-pointer">{{ resultadoVisitas.avisos.length }} avisos del sincronizador</summary>
+                    <ul class="mt-1 list-disc list-inside"><li v-for="(a, i) in resultadoVisitas.avisos" :key="i">{{ a }}</li></ul></details>
+            </div>
+
             <!-- MENSAJES DE ERROR -->
             <div v-if="errorSync" class="bg-red-950 border border-red-700 text-red-200 rounded-xl px-5 py-4 flex justify-between items-start">
                 <div class="flex items-start space-x-3">
@@ -184,6 +205,10 @@
                                         <span class="flex gap-2 mt-1.5">
                                             <button v-if="planosVigentes[p.id]" @click="abrirConfirmar(p)" :data-confirmar-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Confirmar datos del plano</button>
                                             <button v-if="dudasObra(p.id) > 0" @click="abrirMesaObra(p)" :data-dudas-obra="p.id" class="bg-orange-950 hover:bg-orange-900 border border-orange-600 text-orange-200 px-2 py-1 rounded">Dudas de la obra: {{ dudasObra(p.id) }}</button>
+                                        </span>
+                                        <span v-if="p.tipo === 'Supervisión'" class="flex gap-2 mt-1.5">
+                                            <button @click="abrirSubirVisita(p)" :data-subir-visita="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded"><i class="fa-solid fa-file-arrow-up mr-1"></i>Subir visita</button>
+                                            <button @click="abrirConectarDropbox(p)" :data-conectar-dropbox="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded"><i class="fa-brands fa-dropbox mr-1"></i>{{ p.carpeta_dropbox ? 'Dropbox conectado' : 'Conectar con Dropbox' }}</button>
                                         </span>
                                     </td>
                                     <td class="px-6 py-4 text-gray-400 text-xs">{{ p.observaciones }}</td>
@@ -432,6 +457,51 @@
                     <button type="button" @click="cerrarModalObra" class="px-4 py-2 text-sm text-gray-300 hover:text-white">Cancelar</button>
                     <button type="submit" :disabled="modalObra.enviando" data-enviar-obra class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-5 py-2 rounded-lg">
                         {{ modalObra.enviando ? 'Subiendo…' : (modalObra.modo === 'nueva' ? 'Crear obra y subir planos' : 'Subir plano nuevo') }}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: SUBIR VISITA / CONECTAR CON DROPBOX (Etapa 2 · T4v) -->
+    <div v-if="modalVisita" class="fixed inset-0 bg-black/70 z-50 flex items-start justify-center overflow-y-auto p-6" data-modal-visita>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl w-full max-w-2xl">
+            <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-center">
+                <h3 class="font-bold text-white"><i class="mr-2 text-yellow-400" :class="modalVisita.modo === 'subir' ? 'fa-solid fa-file-arrow-up' : 'fa-brands fa-dropbox'"></i>{{ modalVisita.modo === 'subir' ? 'Subir visita' : 'Conectar con Dropbox' }} · {{ modalVisita.nombre }}</h3>
+                <button @click="modalVisita = null" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form @submit.prevent="enviarVisita" class="p-6 space-y-4 text-sm">
+                <template v-if="modalVisita.modo === 'subir'">
+                    <p class="text-xs text-gray-400">La visita se guarda en la carpeta local de la obra (nunca en Dropbox), sin sobrescribir nada. Si no das la fecha o la clase, se leen del nombre del PDF; si tampoco están, quedan «pendiente de verificar» en la Mesa de Dudas.</p>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="col-span-2 block"><span class="text-xs text-gray-400">PDF de la visita *</span>
+                            <input type="file" accept="application/pdf,.pdf" data-visita-pdf @change="modalVisita.pdf = $event.target.files[0] || null" class="w-full mt-1 text-gray-300 text-xs"></label>
+                        <label class="col-span-2 block"><span class="text-xs text-gray-400">Fotos sueltas (opcional, JPG o PNG)</span>
+                            <input type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" multiple data-visita-fotos @change="modalVisita.fotos = Array.from($event.target.files || [])" class="w-full mt-1 text-gray-300 text-xs"></label>
+                        <label class="block"><span class="text-xs text-gray-400">Número de visita *</span>
+                            <input v-model="modalVisita.numero" data-visita-campo="numero" inputmode="numeric" placeholder="17" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white"></label>
+                        <label class="block"><span class="text-xs text-gray-400">Fecha (DD/MM/AAAA)</span>
+                            <input v-model="modalVisita.fecha" data-visita-campo="fecha" placeholder="28/09/2026" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white"></label>
+                        <label class="block"><span class="text-xs text-gray-400">Elementos *</span>
+                            <input v-model="modalVisita.elementos" data-visita-campo="elementos" placeholder="VERTICALES" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white"></label>
+                        <label class="block"><span class="text-xs text-gray-400">Nivel *</span>
+                            <input v-model="modalVisita.nivel" data-visita-campo="nivel" placeholder="S-4" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white"></label>
+                        <label class="col-span-2 block"><span class="text-xs text-gray-400">Clase</span>
+                            <select v-model="modalVisita.clase" data-visita-campo="clase" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white">
+                                <option value="">No la indico (se lee del PDF o queda pendiente)</option><option>Parcial</option><option>Completivo</option></select>
+                            <span class="text-[11px] text-gray-500">Mixta no se acepta: si la visita tiene partes Parcial y Completivo, súbela como dos visitas.</span></label>
+                    </div>
+                </template>
+                <template v-else>
+                    <p class="text-xs text-gray-400">Indica la carpeta <b>LEVANTAMIENTO\VISITA A OBRA</b> de esta obra dentro de Dropbox. Se valida, se guarda en la obra y se sincronizan sus visitas. Dropbox solo se lee: no se escribe ni se mueve nada ahí.</p>
+                    <label class="block"><span class="text-xs text-gray-400">Carpeta de visitas *</span>
+                        <input v-model="modalVisita.carpeta" data-visita-carpeta placeholder="C:\Users\…\CATDIC Dropbox\SUPERVISION\EN CURSO\<OBRA>\LEVANTAMIENTO\VISITA A OBRA" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white font-mono text-xs"></label>
+                </template>
+                <p v-if="modalVisita.error" class="bg-red-950 border border-red-700 text-red-200 rounded-lg px-4 py-2 text-sm" data-error-visita>{{ modalVisita.error }}</p>
+                <div class="flex justify-end space-x-3">
+                    <button type="button" @click="modalVisita = null" class="px-4 py-2 text-sm text-gray-300 hover:text-white">Cancelar</button>
+                    <button type="submit" :disabled="modalVisita.enviando" data-enviar-visita class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-5 py-2 rounded-lg">
+                        {{ modalVisita.enviando ? (modalVisita.modo === 'subir' ? 'Subiendo y leyendo la visita…' : 'Sincronizando y leyendo las visitas…') : (modalVisita.modo === 'subir' ? 'Subir visita' : 'Conectar y sincronizar') }}
                     </button>
                 </div>
             </form>
@@ -1212,6 +1282,79 @@
                 const contarOTs = (estado) => ordenes.value.filter(o => o.estado === estado).length;
                 const filtrarOTs = (estado) => ordenes.value.filter(o => o.estado === estado);
 
+                // --- Etapa 2 · T4v: visitas de la obra (subir el PDF o conectar la carpeta de Dropbox) ---
+                const modalVisita = ref(null);
+                const resultadoVisitas = ref(null);
+                const SUBRUTA_VISITAS = '\\LEVANTAMIENTO\\VISITA A OBRA';
+                const abrirSubirVisita = (p) => {
+                    modalVisita.value = { modo: 'subir', proyecto_id: p.id, nombre: p.nombre, pdf: null, fotos: [], numero: '',
+                        fecha: '', elementos: '', nivel: '', clase: '', enviando: false, error: '' };
+                };
+                const abrirConectarDropbox = (p) => {
+                    modalVisita.value = { modo: 'dropbox', proyecto_id: p.id, nombre: p.nombre,
+                        carpeta: p.carpeta_dropbox ? p.carpeta_dropbox + SUBRUTA_VISITAS : '', enviando: false, error: '' };
+                };
+                const abrirMesaDeVisita = async (visitaId) => {
+                    const v = visitas.value.find(x => x.id === visitaId);
+                    if (v) await abrirMesa(v);
+                };
+                const textoLector = (l) => !l ? '' : l.ok ? `lector: ${l.grupos} elementos en ${l.paginas} páginas`
+                    : l.omitida ? `lector: no se abre (${l.error})` : `lector: ${l.error}`;
+                const filaResultado = (v, dudas, lector) => ({ id: v.id, numero: v.numero, nombre_carpeta: v.nombre_carpeta,
+                    estado: v.estado, dudas: dudas.length, lector: textoLector(lector) });
+
+                const enviarVisita = async () => {
+                    const m = modalVisita.value;
+                    if (!m || m.enviando) return;
+                    m.error = '';
+                    let peticion;
+                    if (m.modo === 'subir') {
+                        if (!m.pdf) { m.error = 'Elige el PDF de la visita.'; return; }
+                        if (!/^\d{1,3}$/.test(String(m.numero).trim())) { m.error = 'El número de visita debe ser un entero (p. ej. 17).'; return; }
+                        if (!m.elementos.trim() || !m.nivel.trim()) { m.error = 'Escribe los elementos y el nivel de la visita.'; return; }
+                        if (m.fecha.trim() && !/^\d{2}\/\d{2}\/\d{4}$/.test(m.fecha.trim())) { m.error = 'La fecha debe ser DD/MM/AAAA (p. ej. 28/09/2026).'; return; }
+                        const f = new FormData();
+                        f.append('pdf', m.pdf);
+                        m.fotos.forEach(foto => f.append('fotos', foto));
+                        for (const c of ['numero', 'elementos', 'nivel', 'fecha', 'clase']) f.append(c, String(m[c]).trim());
+                        peticion = { method: 'POST', body: f };
+                    } else {
+                        if (!m.carpeta.trim()) { m.error = 'Escribe la ruta de la carpeta LEVANTAMIENTO\\VISITA A OBRA.'; return; }
+                        peticion = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ carpeta_visitas: m.carpeta.trim() }) };
+                    }
+                    m.enviando = true;
+                    try {
+                        let r;
+                        const ruta = m.modo === 'subir' ? 'visitas' : 'dropbox';
+                        try { r = await fetch(`${API}/api/proyectos/${encodeURIComponent(m.proyecto_id)}/${ruta}`, peticion); }
+                        catch (e) { throw new Error(`El backend no responde en ${API}. Verifica que el servidor FastAPI esté corriendo.`); }
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        if (m.modo === 'subir') {
+                            resultadoVisitas.value = { titulo: `${m.nombre}: visita subida`, avisos: [],
+                                resumen: `Guardada en ${d.visita.ruta_carpeta} (${d.visita.archivos.length} archivo(s) con sha256).`,
+                                visitas: [filaResultado(d.visita, d.dudas, d.lector)] };
+                        } else {
+                            const s = d.sync;
+                            resultadoVisitas.value = { titulo: `${m.nombre}: conectada con ${d.carpeta_visitas}`, avisos: s.avisos || [],
+                                resumen: `${s.visitas_nuevas} visitas nuevas · ${s.actualizadas} actualizadas · ${s.sin_cambios} sin cambios · ` +
+                                    `${s.con_dudas} con dudas · ${s.procesadas} procesadas` +
+                                    (s.omitidas.length ? ` · ${s.omitidas.length} omitidas (sin número legible)` : '') +
+                                    (s.desaparecidas.length ? ` · ${s.desaparecidas.length} que ya no están en la carpeta` : ''),
+                                visitas: d.visitas_nuevas.map(v => filaResultado(v, v.dudas, v.lector)) };
+                        }
+                        modalVisita.value = null;
+                        await cargarDatos();
+                        // Si quedaron dudas, se abre la Mesa de Dudas filtrada en la primera visita que las tiene
+                        const primera = resultadoVisitas.value.visitas.find(v => v.dudas > 0);
+                        if (primera && !mesa.value) await abrirMesaDeVisita(primera.id);
+                    } catch (e) {
+                        m.error = e.message;
+                    } finally {
+                        m.enviando = false;
+                    }
+                };
+
                 onMounted(() => {
                     cargarDatos();
                 });
@@ -1229,7 +1372,8 @@
                     cambiarElemento, proponerVisor, usarPropuesta, rectActual, estadoRecuadro, detalleRecuadro, guardarRecuadro,
                     vistaPrevia, empezarDibujo, seguirDibujo, terminarDibujo,
                     confirmar, nombreTabla, esDudaPlano, dudasObra, abrirMesaObra, abrirConfirmar, cerrarConfirmar, abrirTabla,
-                    cajaResaltada, confirmarTabla, extraerPlano
+                    cajaResaltada, confirmarTabla, extraerPlano,
+                    modalVisita, resultadoVisitas, abrirSubirVisita, abrirConectarDropbox, abrirMesaDeVisita, enviarVisita
                 };
             }
         }).mount('#app');
