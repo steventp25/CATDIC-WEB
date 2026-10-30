@@ -44,6 +44,14 @@ COLUMNAS_NUEVAS_VISITAS = ("clase_detalle_json", "archivos_json", "campos_pendie
 # Etapa 1 · T8: columna añadida con ALTER TABLE (no destructiva, sin reconstruir la tabla)
 COLUMNA_ORIGEN_VISITAS = "origen_datos_json"
 
+USUARIO_AUDITORIA = "steven"  # T7n-b (decisión 5 de Steven): un solo usuario en la auditoría
+
+
+def usuario_auditoria() -> str:
+    """Usuario de las filas nuevas de `auditoria` (lote, Mesa, Datos de la obra y extractor). Las viejas no se tocan."""
+    return USUARIO_AUDITORIA
+
+
 def get_connection():
     # La ruta se resuelve en cada llamada (config / CATDIC_DB_PATH) para poder probar con BD temporal
     conn = sqlite3.connect(config.obtener_db_path())
@@ -80,7 +88,11 @@ def inicializar_bd():
         planos_sellados TEXT DEFAULT '',
         carpeta_salida TEXT DEFAULT 'INFORMES/2.DATA PROCESADA',
         version INTEGER DEFAULT 1,
-        actualizado TEXT NOT NULL
+        actualizado TEXT NOT NULL,
+        direccion_obra TEXT DEFAULT '',      -- Etapa 3 · T7a: datos de cabecera de los informes
+        provincia TEXT DEFAULT '',
+        sector TEXT DEFAULT '',
+        inicio_obra TEXT DEFAULT ''          -- Etapa 2 · T4n: inicio de obra (DD/MM/AAAA)
     );
     """)
 
@@ -92,14 +104,19 @@ def inicializar_bd():
         id_elemento TEXT NOT NULL,           -- Ej: 'C1', 'Z4', 'A (2-3)', 'L9'
         tipo_elemento TEXT NOT NULL,         -- Ej: 'COLUMNA RECTANGULAR', 'VIGA HORMIGON', 'LOSA ALIGERADA'
         nivel_rango TEXT NOT NULL,           -- Ej: 'FUNDACION', 'S-4', 'E3@E8' (según título impreso en hoja)
-        ejes TEXT NOT NULL,                  -- Formateado según regla Archivo 02 ('—' en losas)
+        ejes TEXT NOT NULL,                  -- Formato CLAUDE.md §4.4 ('—' en losas, nunca deducido)
         hoja_plano_origen TEXT NOT NULL,     -- Ej: 'ES-05'
         archivo_plano_origen TEXT NOT NULL,  -- Ej: 'TERRA LIVING -ESTRUCTURALES.pdf'
         datos_diseno_json TEXT NOT NULL,     -- Dimensiones, acero, estribos, elementos de borde
         estado_campos_json TEXT NOT NULL,    -- Cada campo marcado 'confirmado' o 'pendiente_de_verificar'
         recorte_planta_json TEXT DEFAULT '{}',  -- Coordenadas del recuadro rojo en planta completa
         recorte_detalle_json TEXT DEFAULT '{}', -- Coordenadas del detalle/tabla en el plano
-        actualizado TEXT NOT NULL
+        actualizado TEXT NOT NULL,
+        fuente_json TEXT DEFAULT '{}',       -- Etapa 2 · T1: documento fuente, sección/línea y SHA-256
+        pendientes_json TEXT DEFAULT '[]',   -- Etapa 2 · T1: campos 'pendiente de verificar'
+        plano_id INTEGER,                    -- Etapa 2 · T4n: plano (tabla planos) del que se extrajo
+        revisar_motivo TEXT DEFAULT '',      -- Etapa 2 · T4n: 'plano cambiado: revisar' si el plano se reemplazó
+        UNIQUE(proyecto_id, id_elemento, nivel_rango, ejes)
     );
     """)
 
@@ -175,12 +192,100 @@ def inicializar_bd():
     );
     """)
 
+    # 8. PLANOS DE LA OBRA (Etapa 2 · T4n): vectorial (fuente de lectura) + sellado (referencia legal), con histórico
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS planos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,           -- 1, 2, 3… por obra
+        etiqueta_revision TEXT DEFAULT '',   -- texto libre del usuario (p. ej. 'Rev. marzo 2026')
+        fecha_plano TEXT DEFAULT '',         -- DD/MM/AAAA, la escribe el usuario (opcional)
+        estado TEXT NOT NULL CHECK(estado IN ('vigente', 'historico')),
+        vectorial_archivo TEXT NOT NULL,
+        vectorial_ruta TEXT NOT NULL,
+        vectorial_sha256 TEXT NOT NULL,
+        vectorial_bytes INTEGER NOT NULL,
+        vectorial_paginas INTEGER NOT NULL,
+        sellado_archivo TEXT NOT NULL,
+        sellado_ruta TEXT NOT NULL,
+        sellado_sha256 TEXT NOT NULL,
+        sellado_bytes INTEGER NOT NULL,
+        sellado_paginas INTEGER NOT NULL,
+        certificado_por TEXT NOT NULL,       -- el usuario que certifica que el vectorial corresponde al sellado
+        certificado_en TEXT NOT NULL,
+        certificacion_texto TEXT NOT NULL,
+        notas TEXT DEFAULT '',
+        subido_en TEXT NOT NULL,
+        UNIQUE(proyecto_id, revision)
+    );
+    """)
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_planos_vigente ON planos(proyecto_id) WHERE estado = 'vigente';")
+
+    # 9. DATOS QUE EL PLANO NO DA y escribe el usuario (T3n): E-n ↔ nivel, L# → tipo, emparejamiento de hojas, techos
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS obra_datos_usuario (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        tipo TEXT NOT NULL CHECK(tipo IN ('equivalencia_nivel', 'losa_tipo', 'hoja_par', 'techo')),
+        clave TEXT NOT NULL,                 -- 'E-1', 'L13', página del vectorial, hoja de techo
+        valor TEXT NOT NULL,
+        estado TEXT NOT NULL CHECK(estado IN ('confirmado', 'pendiente de verificar')),
+        fuente TEXT NOT NULL DEFAULT 'usuario',
+        actualizado_por TEXT NOT NULL,
+        actualizado TEXT NOT NULL,
+        UNIQUE(proyecto_id, tipo, clave)
+    );
+    """)
+
+    # 10. TABLAS LEÍDAS DEL VECTORIAL (Etapa 2 · T6n): resultado de las comprobaciones de cada tabla (verde / rojo),
+    #     que T7n usa para confirmar por lote. Una fila por tabla de un plano; se reescribe al volver a extraer.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tablas_extraidas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        plano_id INTEGER NOT NULL REFERENCES planos(id) ON DELETE CASCADE,
+        clave TEXT NOT NULL,                 -- 'p26:acero_en_losa', 'p10:losa_aligerada:E9'
+        tabla TEXT NOT NULL,                 -- acero_en_losa | zapata_muro_lindero | fc_por_rango | losa_aligerada
+        pagina INTEGER NOT NULL,
+        hoja TEXT NOT NULL,
+        nivel_rango TEXT NOT NULL,
+        resultado TEXT NOT NULL CHECK(resultado IN ('verde', 'rojo')),
+        comprobaciones_json TEXT NOT NULL,   -- [{comprobacion, ok, detalle}]
+        filas_json TEXT NOT NULL,            -- las filas tal como se leyeron, con el bbox de cada celda
+        elementos_json TEXT NOT NULL DEFAULT '[]',  -- uid de los elementos propuestos desde esta tabla
+        fuente_json TEXT NOT NULL,
+        extraido_por TEXT NOT NULL,
+        extraido_en TEXT NOT NULL,
+        UNIQUE(plano_id, clave)
+    );
+    """)
+
+    # 11. CERTIFICACIONES DE TABLAS (Etapa 2 · T7n-b, decisión 4): el usuario certifica que una tabla con notas de
+    # modificación ("PLANO ANTERIOR") vale para el plano vigente. Atada al plano y al sha256 del vectorial: si
+    # cambian, la certificación no aplica.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS certificaciones_tabla (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proyecto_id TEXT NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+        plano_id INTEGER NOT NULL REFERENCES planos(id) ON DELETE CASCADE,
+        clave TEXT NOT NULL,                 -- clave de tablas_extraidas
+        sha256 TEXT NOT NULL,                -- sha256 del vectorial certificado
+        notas_json TEXT NOT NULL,            -- las notas que el usuario vio
+        certificado_por TEXT NOT NULL,
+        certificado_en TEXT NOT NULL,
+        UNIQUE(plano_id, clave, sha256)
+    );
+    """)
+
     conn.commit()
     conn.close()
 
     # Migraciones idempotentes de tablas ya existentes
     migrar_visitas()
     agregar_columna_origen_visitas()
+    migrar_elementos_diseno()
+    migrar_proyectos_cabecera()
+    migrar_columnas_t4n()
 
 # ---------- Migración de 'visitas' (Etapa 1 · T2) ----------
 
@@ -331,7 +436,167 @@ def agregar_columna_origen_visitas() -> dict:
     finally:
         conn.close()
 
-def registrar_auditoria(modulo: str, accion: str, entidad_id: str, detalle: dict, usuario: str = "steven"):
+# ---------- Migración de 'elementos_diseno' (Etapa 2 · T1) ----------
+COLUMNAS_NUEVAS_DISENO = (("fuente_json", "'{}'"), ("pendientes_json", "'[]'"))
+CLAVE_UNICA_DISENO = ["proyecto_id", "id_elemento", "nivel_rango", "ejes"]
+INDICE_UNICO_DISENO = "ux_elementos_diseno_clave"
+
+def _diseno_tiene_unico(conn) -> bool:
+    for idx in conn.execute("PRAGMA index_list(elementos_diseno)").fetchall():
+        if idx[2]:  # unique
+            cols = [r[2] for r in conn.execute(f"PRAGMA index_info('{idx[1]}')")]
+            if cols == CLAVE_UNICA_DISENO:
+                return True
+    return False
+
+def migrar_elementos_diseno() -> dict:
+    """
+    Etapa 2 · T1: añade fuente_json y pendientes_json y el UNIQUE
+    (proyecto_id, id_elemento, nivel_rango, ejes) a una 'elementos_diseno' vieja.
+    Se hace con ALTER TABLE ADD COLUMN + CREATE UNIQUE INDEX: no reconstruye la tabla,
+    así conserva las filas y las FK de elementos_visita.elemento_diseno_uid.
+    Idempotente; respalda la BD antes y audita en la misma transacción.
+    Si hay duplicados previos, el índice falla, se revierte todo y no se borra nada.
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        existe = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='elementos_diseno'").fetchone()
+        if not existe:
+            return {"migrada": False, "motivo": "tabla elementos_diseno no existe", "respaldo": None}
+        columnas = {r[1] for r in conn.execute("PRAGMA table_info(elementos_diseno)")}
+        faltan = [(c, d) for c, d in COLUMNAS_NUEVAS_DISENO if c not in columnas]
+        falta_unico = not _diseno_tiene_unico(conn)
+        if not faltan and not falta_unico:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for c, d in faltan:
+                conn.execute(f"ALTER TABLE elementos_diseno ADD COLUMN {c} TEXT DEFAULT {d}")
+            if falta_unico:
+                conn.execute(
+                    f"CREATE UNIQUE INDEX {INDICE_UNICO_DISENO} ON elementos_diseno "
+                    f"({', '.join(CLAVE_UNICA_DISENO)})")
+            filas = conn.execute("SELECT COUNT(*) FROM elementos_diseno").fetchone()[0]
+            violaciones = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violaciones:
+                raise sqlite3.IntegrityError(
+                    f"Migración de elementos_diseno abortada: {len(violaciones)} violaciones FK")
+            detalle = {
+                "respaldo": respaldo.name,
+                "filas_conservadas": filas,
+                "columnas_nuevas": [c for c, _ in faltan],
+                "unique_creado": CLAVE_UNICA_DISENO if falta_unico else None,
+            }
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_ELEMENTOS_DISENO",
+                  "elementos_diseno", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
+    finally:
+        conn.close()
+
+# ---------- Migración de 'proyectos' (Etapa 3 · T7a) ----------
+COLUMNAS_CABECERA_PROYECTO = ("direccion_obra", "provincia", "sector")
+
+def migrar_proyectos_cabecera() -> dict:
+    """
+    Etapa 3 · T7a: añade direccion_obra, provincia y sector a 'proyectos' (TEXT, por defecto '').
+    ALTER TABLE ADD COLUMN: no reconstruye la tabla ni toca las filas. Idempotente; respalda la BD
+    antes y audita en la misma transacción. Los valores NO se siembran: los llena Steven (P11),
+    mientras tanto el generador pone "pendiente de verificar".
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        existe = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proyectos'").fetchone()
+        if not existe:
+            return {"migrada": False, "motivo": "tabla proyectos no existe", "respaldo": None}
+        columnas = {r[1] for r in conn.execute("PRAGMA table_info(proyectos)")}
+        faltan = [c for c in COLUMNAS_CABECERA_PROYECTO if c not in columnas]
+        if not faltan:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for c in faltan:
+                conn.execute(f"ALTER TABLE proyectos ADD COLUMN {c} TEXT DEFAULT ''")
+            filas = conn.execute("SELECT COUNT(*) FROM proyectos").fetchone()[0]
+            detalle = {"respaldo": respaldo.name, "filas_conservadas": filas, "columnas_nuevas": faltan}
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_PROYECTOS_CABECERA",
+                  "proyectos", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
+    finally:
+        conn.close()
+
+# ---------- Migración (Etapa 2 · T4n): inicio_obra, plano_id y revisar_motivo ----------
+COLUMNAS_T4N = {  # tabla -> {columna: definición}
+    "proyectos": {"inicio_obra": "TEXT DEFAULT ''"},
+    "elementos_diseno": {"plano_id": "INTEGER", "revisar_motivo": "TEXT DEFAULT ''"},
+}
+
+def migrar_columnas_t4n() -> dict:
+    """
+    Añade con ALTER TABLE ADD COLUMN (no destructivo) proyectos.inicio_obra y elementos_diseno.plano_id /
+    revisar_motivo. Idempotente; respalda la BD antes y audita en la misma transacción. No toca ninguna fila.
+    """
+    db_path = Path(config.obtener_db_path())
+    conn = get_connection()
+    try:
+        faltan = {}
+        for tabla, columnas in COLUMNAS_T4N.items():
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabla,)).fetchone():
+                continue
+            existentes = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+            pendientes = {c: d for c, d in columnas.items() if c not in existentes}
+            if pendientes:
+                faltan[tabla] = pendientes
+        if not faltan:
+            return {"migrada": False, "motivo": "ya migrada", "respaldo": None}
+        respaldo = _respaldar_bd(conn, db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            for tabla, columnas in faltan.items():
+                for c, definicion in columnas.items():
+                    conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {c} {definicion}")
+            detalle = {"respaldo": respaldo.name, "columnas_nuevas": {t: list(c) for t, c in faltan.items()}}
+            conn.execute("""
+                INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (datetime.now().isoformat(), "steven", "SISTEMA", "MIGRACION_COLUMNAS_T4N",
+                  "proyectos,elementos_diseno", json.dumps(detalle, ensure_ascii=False)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return {"migrada": True, **detalle, "respaldo": str(respaldo)}
+    finally:
+        conn.close()
+
+def registrar_auditoria(modulo: str, accion: str, entidad_id: str, detalle: dict, usuario: str = USUARIO_AUDITORIA):
     conn = get_connection()
     conn.execute("""
         INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)

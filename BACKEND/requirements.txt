@@ -12,3 +12,6 @@ PyMuPDF==2.0        # import pymupdf (el alias "fitz" está obsoleto)
 Pillow==13.0.0
 playwright==1.64.0  # HTML -> PDF con Chromium
 pypdf==6.21.2
+
+# Etapa 2 · T4n/T7n: subida de planos (multipart) con FastAPI, en ejecución (no solo en pruebas)
+python-multipart>=0.0.32

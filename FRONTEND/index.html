@@ -20,6 +20,9 @@
                 <h1 class="text-xl font-bold tracking-tight text-white">Control Taller <span class="text-xs bg-blue-900 text-blue-200 px-2 py-0.5 rounded ml-2">Web Local v2.0</span></h1>
             </div>
             <div class="flex items-center space-x-4">
+                <button @click="abrirNuevaObra" data-nueva-obra class="bg-yellow-500 hover:bg-yellow-400 text-black text-sm font-bold px-4 py-2 rounded-lg flex items-center space-x-2 transition">
+                    <i class="fa-solid fa-plus"></i><span>Nueva obra</span>
+                </button>
                 <button @click="sincronizarDropbox" :disabled="cargando" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-60 disabled:cursor-wait text-sm text-yellow-400 px-4 py-2 rounded-lg border border-yellow-500/30 transition flex items-center space-x-2">
                     <i class="fa-solid fa-sync" :class="{'fa-spin': cargando}"></i>
                     <span>{{ cargando ? 'Sincronizando…' : 'Sincronizar desde Dropbox' }}</span>
@@ -37,6 +40,11 @@
 
         <!-- CONTENIDO PRINCIPAL -->
         <main class="flex-1 overflow-y-auto p-6 space-y-6">
+            <div v-if="avisoObra" class="bg-green-950 border border-green-700 text-green-200 rounded-xl px-5 py-3 flex justify-between items-start" data-aviso-obra>
+                <p class="text-sm"><i class="fa-solid fa-circle-check text-green-400 mr-2"></i>{{ avisoObra }}</p>
+                <button @click="avisoObra = ''" class="text-green-300 hover:text-white text-sm" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
             <!-- MENSAJES DE ERROR -->
             <div v-if="errorSync" class="bg-red-950 border border-red-700 text-red-200 rounded-xl px-5 py-4 flex justify-between items-start">
                 <div class="flex items-start space-x-3">
@@ -53,6 +61,14 @@
                 <div>
                     <p class="font-bold text-red-100">No se pudo cargar el tablero</p>
                     <p class="text-sm mt-1">{{ errorDashboard }}</p>
+                </div>
+            </div>
+
+            <div v-if="errorDudas" class="bg-red-950 border border-red-700 text-red-200 rounded-xl px-5 py-4 flex items-start space-x-3" data-error-dudas>
+                <i class="fa-solid fa-plug-circle-xmark text-red-400 mt-0.5"></i>
+                <div>
+                    <p class="font-bold text-red-100">No se pudo leer la Mesa de Dudas</p>
+                    <p class="text-sm mt-1">{{ errorDudas }}</p>
                 </div>
             </div>
 
@@ -137,6 +153,7 @@
                                 <th class="px-6 py-3">Cliente</th>
                                 <th class="px-6 py-3">Supervisor</th>
                                 <th class="px-6 py-3">Estado Informe</th>
+                                <th class="px-6 py-3">Plano vigente</th>
                                 <th class="px-6 py-3">Próxima Acción</th>
                             </tr>
                         </thead>
@@ -152,6 +169,22 @@
                                     <td class="px-6 py-4 text-gray-300">{{ p.supervisor || 'Pendiente' }}</td>
                                     <td class="px-6 py-4">
                                         <span class="bg-yellow-950 text-yellow-300 border border-yellow-800/50 text-xs px-2 py-0.5 rounded">{{ p.estado_informe || 'Sin iniciar' }}</span>
+                                    </td>
+                                    <td class="px-6 py-4 text-xs" :data-plano-de="p.id">
+                                        <template v-if="planosVigentes[p.id]">
+                                            <span class="text-gray-200">Rev. {{ planosVigentes[p.id].revision }}<span v-if="planosVigentes[p.id].etiqueta_revision"> · {{ planosVigentes[p.id].etiqueta_revision }}</span></span>
+                                            <span class="block text-gray-400" :title="'vectorial ' + planosVigentes[p.id].vectorial_sha256 + ' · sellado ' + planosVigentes[p.id].sellado_sha256">{{ planosVigentes[p.id].fecha_plano || 'sin fecha de plano' }} · certificado por {{ planosVigentes[p.id].certificado_por }}</span>
+                                        </template>
+                                        <span v-else class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">sin plano</span>
+                                        <span class="flex gap-2 mt-1.5">
+                                            <button @click="abrirCambiarPlano(p)" :data-cambiar-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">{{ planosVigentes[p.id] ? 'Cambiar plano' : 'Subir planos' }}</button>
+                                            <button v-if="planosVigentes[p.id]" @click="abrirVisor(p)" :data-ver-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Ver plano</button>
+                                            <button @click="abrirDatosObra(p)" :data-datos-obra="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Datos de la obra</button>
+                                        </span>
+                                        <span class="flex gap-2 mt-1.5">
+                                            <button v-if="planosVigentes[p.id]" @click="abrirConfirmar(p)" :data-confirmar-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Confirmar datos del plano</button>
+                                            <button v-if="dudasObra(p.id) > 0" @click="abrirMesaObra(p)" :data-dudas-obra="p.id" class="bg-orange-950 hover:bg-orange-900 border border-orange-600 text-orange-200 px-2 py-1 rounded">Dudas de la obra: {{ dudasObra(p.id) }}</button>
+                                        </span>
                                     </td>
                                     <td class="px-6 py-4 text-gray-400 text-xs">{{ p.observaciones }}</td>
                                 </tr>
@@ -183,7 +216,7 @@
                             <tr v-if="!visitas.length">
                                 <td colspan="6" class="px-6 py-6 text-center text-gray-500 text-xs">{{ errorDashboard ? 'Sin datos: no se pudo leer la cola de visitas del backend.' : 'No hay visitas registradas. Pulsa "Sincronizar desde Dropbox".' }}</td>
                             </tr>
-                            <tr v-for="v in visitasOrdenadas" :key="v.id" class="hover:bg-[#222227] transition" :class="{'bg-orange-950/30 border-l-4 border-orange-500': v.estado === 'Con dudas'}">
+                            <tr v-for="v in visitasOrdenadas" :key="v.id" class="hover:bg-[#222227] transition" :class="{'bg-orange-950/30 border-l-4 border-orange-500': v.estado === 'Con dudas' || bloqueantesAbiertas(v.id) > 0, 'cursor-pointer': dudasAbiertas(v.id) > 0}" @click="dudasAbiertas(v.id) > 0 && abrirMesa(v)" :title="dudasAbiertas(v.id) > 0 ? 'Abrir la Mesa de Dudas de esta visita' : ''">
                                 <td class="px-6 py-3 text-gray-300 text-xs">{{ nombreProyecto(v.proyecto_id) }}</td>
                                 <td class="px-6 py-3 font-bold text-white">
                                     <span v-if="esPendiente(v.numero)" class="bg-orange-950 text-orange-300 border border-orange-600 text-xs px-2 py-0.5 rounded font-semibold">pendiente de verificar</span>
@@ -206,6 +239,12 @@
                                     <span class="text-xs px-2 py-0.5 rounded border font-medium" :class="claseEstado(v.estado)">
                                         <i v-if="v.estado === 'Con dudas'" class="fa-solid fa-circle-question mr-1"></i>{{ v.estado }}
                                     </span>
+                                    <p v-if="bloqueantesAbiertas(v.id) > 0 && v.estado !== 'Con dudas'" class="text-xs text-orange-300 mt-1 font-semibold" data-aviso-dudas>
+                                        <i class="fa-solid fa-triangle-exclamation mr-1"></i>{{ v.estado }} con {{ bloqueantesAbiertas(v.id) }} {{ bloqueantesAbiertas(v.id) === 1 ? 'duda bloqueante abierta' : 'dudas bloqueantes abiertas' }}
+                                    </p>
+                                    <p v-if="dudasAbiertas(v.id) > 0" class="text-xs text-yellow-300 mt-1">
+                                        <i class="fa-solid fa-comments mr-1"></i>{{ dudasAbiertas(v.id) }} {{ dudasAbiertas(v.id) === 1 ? 'duda abierta' : 'dudas abiertas' }} · clic para responder
+                                    </p>
                                     <p v-if="parsearJSON(v.campos_pendientes_json, []).length" class="text-xs text-orange-300 mt-1">
                                         Pendiente: {{ parsearJSON(v.campos_pendientes_json, []).map(etiquetaCampo).join(', ') }}
                                     </p>
@@ -236,10 +275,365 @@
                 </div>
             </div>
         </main>
+
+        <!-- MESA DE DUDAS (panel de la visita, o de la obra: dudas sin visita, p. ej. las del plano T6n) -->
+        <div v-if="mesa" class="fixed inset-0 z-40 flex justify-end bg-black/60" @click.self="cerrarMesa" data-mesa>
+            <aside class="w-full max-w-2xl bg-[#1a1a1e] border-l border-[#29292e] h-full flex flex-col">
+                <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-start">
+                    <div>
+                        <h3 class="font-bold text-white"><i class="fa-solid fa-circle-question text-orange-400 mr-2"></i>Mesa de Dudas</h3>
+                        <template v-if="mesa.visita">
+                            <p class="text-xs text-gray-400 mt-1">Visita {{ mesa.visita.numero }} · {{ mesa.visita.nombre_carpeta }}</p>
+                            <p class="text-xs mt-1"><span class="px-2 py-0.5 rounded border font-medium" :class="claseEstado(mesa.visita.estado)">{{ mesa.visita.estado }}</span></p>
+                        </template>
+                        <p v-else class="text-xs text-gray-400 mt-1" data-mesa-obra>Obra {{ mesa.proyecto.nombre }} · dudas sin visita (plano y datos de la obra)</p>
+                    </div>
+                    <button @click="cerrarMesa" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-6 space-y-4">
+                    <div v-if="mesa.error" class="bg-red-950 border border-red-700 text-red-200 rounded-lg px-4 py-3 text-sm" data-error-mesa>
+                        <i class="fa-solid fa-plug-circle-xmark text-red-400 mr-2"></i>{{ mesa.error }}
+                    </div>
+                    <div v-if="mesa.conflicto" class="bg-red-950 border border-red-700 text-red-200 rounded-lg px-4 py-3 text-sm" data-conflicto-mesa>
+                        <i class="fa-solid fa-triangle-exclamation text-red-400 mr-2"></i>{{ mesa.conflicto }} Se recargaron las dudas.
+                    </div>
+                    <p v-if="mesa.cargando" class="text-xs text-gray-400">Cargando dudas…</p>
+                    <p v-if="!mesa.cargando && !mesa.error && !mesa.dudas.length" class="text-xs text-gray-400">{{ mesa.visita ? 'Esta visita no tiene dudas.' : 'Esta obra no tiene dudas abiertas sin visita.' }}</p>
+                    <p v-if="mesa.visita && mesa.visita.estado === 'Procesada' && bloqueantesAbiertas(mesa.visita.id) > 0" class="text-xs text-orange-200 bg-orange-950 border border-orange-600 rounded px-3 py-2">
+                        <i class="fa-solid fa-triangle-exclamation mr-1"></i>Esta visita figura como Procesada pero tiene dudas bloqueantes abiertas.
+                    </p>
+
+                    <div v-for="d in mesa.dudas" :key="d.id" class="rounded-lg border p-4" :class="d.resuelta ? 'border-[#29292e] bg-[#121214] opacity-70' : (d.categoria === 'DUDA_BLOQUEANTE' ? 'border-orange-600 bg-orange-950/20' : 'border-yellow-800/50 bg-yellow-950/10')" :data-duda="d.id">
+                        <div class="flex flex-wrap items-center gap-2 text-xs">
+                            <span class="px-2 py-0.5 rounded border font-semibold" :class="d.categoria === 'DUDA_BLOQUEANTE' ? 'bg-orange-900 text-orange-100 border-orange-500' : 'bg-yellow-950 text-yellow-300 border-yellow-800/50'">{{ d.categoria === 'DUDA_BLOQUEANTE' ? 'Bloqueante' : 'Hallazgo interno' }}</span>
+                            <span v-if="esElementoVisita(d)" class="text-gray-300" data-etiqueta-visita>Etiqueta en la visita: <b class="text-white">{{ d.id_elemento || '(sin etiqueta)' }}</b> · <b class="text-white">{{ fotosDe(d) }}</b></span>
+                            <template v-else>
+                                <span class="text-gray-300">Campo: <b class="text-white">{{ etiquetaCampo(d.campo_afectado) }}</b></span>
+                                <span v-if="d.id_elemento" class="text-gray-300">Elemento: <b class="text-white">{{ d.id_elemento }}</b></span>
+                            </template>
+                            <span v-if="d.resuelta" class="bg-green-950 text-green-300 border border-green-800/50 px-2 py-0.5 rounded">Resuelta</span>
+                        </div>
+                        <p class="text-sm text-gray-100 mt-2">{{ d.pregunta }}</p>
+                        <p class="text-xs text-gray-500 mt-1">Creada: {{ formatearFechaHora(d.creado) }}<span v-if="d.resuelta && d.resuelto_en"> · Resuelta: {{ formatearFechaHora(d.resuelto_en) }}</span></p>
+
+                        <!-- Ya respondida -->
+                        <p v-if="d.resuelta" class="text-sm mt-3 text-gray-300">Respuesta: <b class="text-white">{{ d.respuesta || '—' }}</b></p>
+
+                        <!-- Abierta: el control depende del tipo de duda -->
+                        <div v-else class="mt-3 space-y-2">
+                            <template v-if="d.categoria === 'HALLAZGO_INTERNO'">
+                                <button @click="responder(d, 'revisado')" :disabled="d._guardando" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-60 text-sm text-yellow-300 px-3 py-1.5 rounded border border-yellow-500/30">Marcar revisado</button>
+                            </template>
+                            <template v-else-if="d.campo_confirmable">
+                                <p class="text-xs text-gray-300" data-campo-confirmable>Campo del plano: <b class="text-white">{{ d.campo_confirmable.campo }}</b> de <b class="text-white">{{ d.campo_confirmable.id_elemento }}</b> ({{ d.campo_confirmable.nivel_rango }}) · propuesto: <b class="text-orange-300">{{ d.campo_confirmable.valor }}</b></p>
+                                <input v-model="d._entrada" type="text" placeholder="Valor leído en el plano" class="w-64 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-sm text-white" data-valor-campo>
+                                <button @click="responder(d, d._entrada)" :disabled="d._guardando || !d._entrada" class="ml-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded" data-confirmar-campo>Confirmar valor</button>
+                                <p class="text-xs text-gray-400"><i class="fa-solid fa-circle-info mr-1"></i>El valor que escribes queda confirmado (fuente: tú) con auditoría. Se valida con las mismas reglas de la tabla.</p>
+                            </template>
+                            <template v-else-if="d.id_elemento">
+                                <textarea v-model="d._entrada" rows="2" placeholder="Respuesta (texto libre)" class="w-full bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-sm text-white"></textarea>
+                                <button @click="responder(d, d._entrada)" :disabled="d._guardando || !d._entrada" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded">Guardar respuesta</button>
+                                <p v-if="esDudaPlano(d)" class="text-xs text-gray-400" data-aviso-plano><i class="fa-solid fa-circle-info mr-1"></i>Esta respuesta se guarda pero no confirma ningún dato. Si la causa sigue (en el plano o en «Datos de la obra»), la duda vuelve a abrirse al extraer.</p>
+                                <p v-if="esElementoVisita(d)" class="text-xs text-gray-400" data-aviso-etiqueta><i class="fa-solid fa-circle-info mr-1"></i>Esta respuesta se guarda; se aplicará al cruzar con los planos.</p>
+                            </template>
+                            <template v-else-if="d.campo_afectado === 'fecha_visita'">
+                                <input v-model="d._entrada" type="text" inputmode="numeric" maxlength="10" placeholder="DD/MM/AAAA" class="w-48 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-sm text-white">
+                                <button @click="responder(d, d._entrada)" :disabled="d._guardando || !d._entrada" class="ml-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded">Guardar fecha</button>
+                            </template>
+                            <template v-else-if="d.campo_afectado === 'clase'">
+                                <select v-model="d._entrada" class="bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-sm text-white">
+                                    <option value="" disabled>Elige la clase…</option>
+                                    <option value="Parcial">Parcial</option>
+                                    <option value="Completivo">Completivo</option>
+                                </select>
+                                <button @click="responder(d, d._entrada)" :disabled="d._guardando || !d._entrada" class="ml-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded">Guardar clase</button>
+                            </template>
+                            <template v-else-if="d.campo_afectado === 'estado'">
+                                <div class="flex flex-col gap-1 text-sm text-gray-200">
+                                    <label><input type="radio" value="corresponde" v-model="d._entrada" class="mr-2">Corresponde</label>
+                                    <label><input type="radio" value="no corresponde" v-model="d._entrada" class="mr-2">No corresponde</label>
+                                </div>
+                                <div v-if="d._entrada === 'corresponde'" class="text-sm">
+                                    <p v-if="!mesa.visita || !candidatosStp(mesa.visita).length" class="text-orange-300 text-xs">La visita no tiene STP candidatos guardados: no se puede citar ninguno.</p>
+                                    <template v-else>
+                                        <p class="text-xs text-gray-400 mb-1">STP que corresponde a esta visita:</p>
+                                        <select v-model="d._stp" class="w-full bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-xs text-white">
+                                            <option v-for="(g, i) in candidatosStp(mesa.visita)" :key="i" :value="i">{{ g.join(' | ') }}</option>
+                                        </select>
+                                    </template>
+                                </div>
+                                <button @click="responderEstado(d)" :disabled="d._guardando || !d._entrada" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded">Guardar estado</button>
+                            </template>
+                            <template v-else-if="d.campo_afectado === 'archivos_json'">
+                                <p class="text-xs text-gray-300"><i class="fa-solid fa-circle-info mr-1"></i>Se cierra sola al sincronizar cuando el PDF esté en la carpeta de la visita. No se responde con texto.</p>
+                            </template>
+                            <template v-else>
+                                <p class="text-xs text-gray-300"><i class="fa-solid fa-circle-info mr-1"></i>Esta duda ({{ d.campo_afectado }}) no se responde desde la Mesa de Dudas.</p>
+                            </template>
+                            <p v-if="d._error" class="text-sm text-red-300 bg-red-950 border border-red-700 rounded px-3 py-2" data-error-duda><i class="fa-solid fa-circle-xmark mr-1"></i>{{ d._error }}</p>
+                        </div>
+                    </div>
+                    <p v-if="mesa.aviso" class="text-sm text-green-300 bg-green-950 border border-green-800/50 rounded px-3 py-2" data-aviso-mesa>{{ mesa.aviso }}</p>
+                </div>
+            </aside>
+        </div>
+    <!-- MODAL: NUEVA OBRA / CAMBIAR PLANO (Etapa 2 · T4n) -->
+    <div v-if="modalObra" class="fixed inset-0 bg-black/70 z-50 flex items-start justify-center overflow-y-auto p-6" data-modal-obra>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl w-full max-w-3xl">
+            <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-center">
+                <h3 class="font-bold text-white"><i class="fa-solid fa-building mr-2 text-yellow-400"></i>{{ modalObra.titulo }}</h3>
+                <button @click="cerrarModalObra" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form @submit.prevent="enviarObra" class="p-6 space-y-5">
+                <div v-if="modalObra.modo === 'nueva'" class="grid grid-cols-2 gap-3 text-sm">
+                    <label class="col-span-2 block"><span class="text-xs text-gray-400">Nombre de la obra *</span>
+                        <input v-model="modalObra.datos.nombre" data-campo="nombre" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Tipo</span>
+                        <select v-model="modalObra.datos.tipo" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id">
+                            <option>Supervisión</option><option>Levantamiento</option></select></label>
+                    <label class="block"><span class="text-xs text-gray-400">Cliente</span>
+                        <input v-model="modalObra.datos.cliente" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">No. de solicitud</span>
+                        <input v-model="modalObra.datos.no_solicitud" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">No. de licencia</span>
+                        <input v-model="modalObra.datos.no_licencia" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Residente de obra (nombre y colegiatura)</span>
+                        <input v-model="modalObra.datos.residente_obra" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Supervisor</span>
+                        <input v-model="modalObra.datos.supervisor" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="col-span-2 block"><span class="text-xs text-gray-400">Dirección de la obra</span>
+                        <input v-model="modalObra.datos.direccion_obra" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Provincia</span>
+                        <input v-model="modalObra.datos.provincia" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Sector</span>
+                        <input v-model="modalObra.datos.sector" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Inicio de obra (DD/MM/AAAA)</span>
+                        <input v-model="modalObra.datos.inicio_obra" placeholder="01/03/2026" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white" :disabled="!!modalObra.proyecto_id"></label>
+                </div>
+                <div v-else class="text-sm text-gray-300">Obra: <b class="text-white">{{ modalObra.nombre }}</b>.
+                    El plano nuevo queda vigente; el anterior pasa al histórico y los elementos ya extraídos de él se marcan «plano cambiado: revisar».</div>
+
+                <div class="border-t border-[#29292e] pt-4 grid grid-cols-2 gap-3 text-sm">
+                    <label class="block"><span class="text-xs text-gray-400">Plano VECTORIAL (PDF, fuente de lectura) *</span>
+                        <input type="file" accept="application/pdf,.pdf" data-archivo="vectorial" @change="modalObra.vectorial = $event.target.files[0] || null" class="w-full mt-1 text-gray-300 text-xs"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Plano SELLADO (PDF, referencia legal) *</span>
+                        <input type="file" accept="application/pdf,.pdf" data-archivo="sellado" @change="modalObra.sellado = $event.target.files[0] || null" class="w-full mt-1 text-gray-300 text-xs"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Revisión (texto libre)</span>
+                        <input v-model="modalObra.etiqueta_revision" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white"></label>
+                    <label class="block"><span class="text-xs text-gray-400">Fecha del plano (DD/MM/AAAA)</span>
+                        <input v-model="modalObra.fecha_plano" placeholder="10/03/2026" class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-white"></label>
+                </div>
+                <label class="flex items-start space-x-2 text-sm text-gray-200 bg-[#121214] border border-yellow-800/50 rounded-lg p-3">
+                    <input type="checkbox" v-model="modalObra.certifico" data-certifico class="mt-1">
+                    <span>Certifico que el vectorial corresponde a la versión sellada <span class="text-xs text-gray-400">(queda registrado con tu usuario y la fecha)</span></span>
+                </label>
+                <p v-if="modalObra.error" class="bg-red-950 border border-red-700 text-red-200 rounded-lg px-4 py-2 text-sm" data-error-obra>{{ modalObra.error }}</p>
+                <div class="flex justify-end space-x-3">
+                    <button type="button" @click="cerrarModalObra" class="px-4 py-2 text-sm text-gray-300 hover:text-white">Cancelar</button>
+                    <button type="submit" :disabled="modalObra.enviando" data-enviar-obra class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-5 py-2 rounded-lg">
+                        {{ modalObra.enviando ? 'Subiendo…' : (modalObra.modo === 'nueva' ? 'Crear obra y subir planos' : 'Subir plano nuevo') }}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: VISOR DEL VECTORIAL Y RECUADROS (Etapa 2 · T5n) -->
+    <div v-if="visor" class="fixed inset-0 bg-black/80 z-50 flex flex-col p-4" data-visor>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl flex flex-col flex-1 min-h-0">
+            <div class="px-5 py-3 border-b border-[#29292e] flex flex-wrap items-center gap-3 text-sm">
+                <h3 class="font-bold text-white mr-2"><i class="fa-solid fa-magnifying-glass-plus mr-2 text-yellow-400"></i>Visor · {{ visor.nombre }} <span class="text-xs text-gray-400 font-normal">(plano vectorial vigente)</span></h3>
+                <select v-model.number="visor.pagina" @change="cargarHoja" data-visor-hoja class="bg-[#121214] border border-[#29292e] rounded px-2 py-1 text-white max-w-xs">
+                    <option v-for="h in visor.hojas" :key="h.pagina" :value="h.pagina">p{{ h.pagina }} · hoja {{ h.hoja }} · {{ (h.titulos[0] || '').slice(0, 40) }}</option>
+                </select>
+                <span class="text-gray-400">Zoom</span>
+                <button @click="zoomVisor(0.8)" class="bg-[#29292e] px-2 py-1 rounded" data-zoom-menos>−</button>
+                <span class="text-white w-12 text-center" data-zoom>{{ Math.round(visor.zoom * 100) }}%</span>
+                <button @click="zoomVisor(1.25)" class="bg-[#29292e] px-2 py-1 rounded" data-zoom-mas>+</button>
+                <button @click="ajustarVisor" class="bg-[#29292e] px-2 py-1 rounded">Ajustar</button>
+                <span class="flex-1"></span>
+                <button @click="visor = null" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="flex flex-1 min-h-0">
+                <div ref="lienzoVisor" class="flex-1 overflow-auto bg-[#0b0b0d] relative" data-lienzo>
+                    <div v-if="visor.info" class="relative select-none" :style="{ width: ptAPx(visor.info.ancho_pt) + 'px', height: ptAPx(visor.info.alto_pt) + 'px' }"
+                         @mousedown.prevent="empezarDibujo" @mousemove="seguirDibujo" @mouseup="terminarDibujo" @mouseleave="terminarDibujo" data-hoja-lienzo>
+                        <img :src="visor.urlImagen" :style="{ width: '100%', height: '100%' }" draggable="false" data-hoja-img>
+                        <div v-for="c in cajasVisibles" :key="c.clave" class="absolute pointer-events-none" :data-caja="c.clave"
+                             :style="{ left: ptAPx(c.rect[0]) + 'px', top: ptAPx(c.rect[1]) + 'px', width: ptAPx(c.rect[2] - c.rect[0]) + 'px', height: ptAPx(c.rect[3] - c.rect[1]) + 'px',
+                                       border: c.borde, background: c.fondo }">
+                            <span class="absolute -top-5 left-0 text-[10px] px-1 rounded whitespace-nowrap" :style="{ background: c.etiquetaFondo, color: '#000' }">{{ c.etiqueta }}</span>
+                        </div>
+                    </div>
+                    <p v-else class="p-6 text-gray-400 text-sm">Cargando la hoja…</p>
+                </div>
+                <div class="w-96 border-l border-[#29292e] overflow-y-auto p-4 space-y-4 text-sm">
+                    <div>
+                        <label class="text-xs text-gray-400">Elemento</label>
+                        <select v-model="visor.uid" @change="cambiarElemento" data-visor-elemento class="w-full mt-1 bg-[#121214] border border-[#29292e] rounded px-2 py-1.5 text-white">
+                            <option value="">— elige un elemento —</option>
+                            <option v-for="e in visor.elementos" :key="e.uid" :value="e.uid">{{ e.id_elemento }} · {{ e.ejes }} · {{ e.nivel_rango }}</option>
+                        </select>
+                        <p v-if="!visor.elementos.length" class="text-xs text-orange-300 mt-1">Esta obra aún no tiene elementos de diseño: los recuadros se guardan por elemento.</p>
+                        <p v-if="elementoVisor && elementoVisor.revisar_motivo" class="text-xs text-orange-300 mt-1">{{ elementoVisor.revisar_motivo }}</p>
+                    </div>
+                    <button @click="proponerVisor" :disabled="!visor.uid || visor.ocupado" data-proponer class="w-full bg-[#29292e] hover:bg-[#323238] disabled:opacity-50 text-white font-semibold py-1.5 rounded">Proponer recuadros</button>
+                    <div v-for="t in tiposRecuadro" :key="t.tipo" class="bg-[#121214] border rounded-lg p-3 space-y-2" :class="visor.tipo === t.tipo ? 'border-yellow-500' : 'border-[#29292e]'" :data-recuadro="t.tipo">
+                        <div class="flex items-center justify-between">
+                            <label class="font-semibold text-white"><input type="radio" v-model="visor.tipo" :value="t.tipo" class="mr-1.5">{{ t.titulo }}</label>
+                            <span class="text-[10px] px-1.5 py-0.5 rounded border" :class="estadoRecuadro(t.tipo).clase">{{ estadoRecuadro(t.tipo).texto }}</span>
+                        </div>
+                        <p class="text-xs text-gray-400" :data-detalle-recuadro="t.tipo">{{ detalleRecuadro(t.tipo) }}</p>
+                        <div class="flex flex-wrap gap-2">
+                            <button @click="usarPropuesta(t.tipo)" :disabled="!visor.propuestas || !visor.propuestas[t.tipo] || !visor.propuestas[t.tipo].rect" :data-usar="t.tipo" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-40 text-white text-xs px-2 py-1 rounded">Usar propuesta</button>
+                            <button @click="guardarRecuadro(t.tipo)" :disabled="!visor.uid || !visor.borrador[t.tipo]" :data-guardar-recuadro="t.tipo" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black text-xs font-bold px-2 py-1 rounded">Confirmar y guardar</button>
+                            <button @click="vistaPrevia(t.tipo)" :disabled="!rectActual(t.tipo)" :data-previa="t.tipo" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-40 text-white text-xs px-2 py-1 rounded">Vista previa</button>
+                        </div>
+                        <img v-if="visor.previas[t.tipo]" :src="visor.previas[t.tipo]" class="w-full border border-[#29292e] rounded" :data-previa-img="t.tipo">
+                    </div>
+                    <p class="text-xs text-gray-400">Dibuja un recuadro arrastrando sobre la hoja; se aplica al tipo marcado. Las coordenadas se guardan en puntos del PDF vectorial.</p>
+                    <p v-if="visor.error" class="bg-red-950 border border-red-700 text-red-200 rounded px-3 py-2 text-xs" data-visor-error>{{ visor.error }}</p>
+                    <p v-if="visor.mensaje" class="bg-green-950 border border-green-700 text-green-200 rounded px-3 py-2 text-xs" data-visor-mensaje>{{ visor.mensaje }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: DATOS DE LA OBRA QUE EL PLANO NO DA (E-n ↔ nivel, L# → tipo, hojas) -->
+    <div v-if="modalDatos" class="fixed inset-0 bg-black/70 z-50 flex items-start justify-center overflow-y-auto p-6" data-modal-datos>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl w-full max-w-3xl">
+            <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-center">
+                <h3 class="font-bold text-white"><i class="fa-solid fa-list-check mr-2 text-yellow-400"></i>Datos de la obra · {{ modalDatos.nombre }}</h3>
+                <button @click="modalDatos = null" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-6 space-y-5 text-sm">
+                <p class="text-xs text-gray-400">El plano no trae estos datos: los escribes tú (una línea por dato, «clave = valor») y quedan confirmados con auditoría. Lo que no escribas sigue pendiente en la Mesa de Dudas.</p>
+                <div v-for="g in gruposDatos" :key="g.tipo" class="bg-[#121214] border border-[#29292e] rounded-lg p-4 space-y-2">
+                    <p class="font-semibold text-white">{{ g.titulo }} <span class="text-xs text-gray-400 font-normal">{{ g.ayuda }}</span></p>
+                    <textarea v-model="modalDatos.texto[g.tipo]" rows="4" :data-datos="g.tipo" :placeholder="g.ejemplo" class="w-full bg-[#1a1a1e] border border-[#29292e] rounded px-3 py-2 text-white font-mono text-xs"></textarea>
+                    <div class="flex items-center justify-between">
+                        <span v-if="g.sinDuda" class="text-xs text-gray-400">Las dudas de esas plantas se cierran al volver a extraer.</span>
+                        <label v-else class="text-xs text-gray-300"><input type="checkbox" v-model="modalDatos.completo[g.tipo]" class="mr-1.5">Ya escribí todos los de esta lista</label>
+                        <button @click="guardarDatos(g.tipo)" :disabled="modalDatos.enviando" :data-guardar="g.tipo" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-xs font-bold px-3 py-1.5 rounded">Guardar</button>
+                    </div>
+                    <p v-if="modalDatos.mensajes[g.tipo]" class="text-xs" :class="modalDatos.errores[g.tipo] ? 'text-red-300' : 'text-green-300'" :data-mensaje="g.tipo">{{ modalDatos.mensajes[g.tipo] }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- MODAL: CONFIRMAR DATOS DEL PLANO (Etapa 2 · T7n): confirmación por lote de una tabla en verde, con el recorte al lado -->
+    <div v-if="confirmar" class="fixed inset-0 bg-black/80 z-30 flex flex-col p-4" data-confirmar>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl flex flex-col flex-1 min-h-0">
+            <div class="px-5 py-3 border-b border-[#29292e] flex flex-wrap items-center gap-3 text-sm">
+                <h3 class="font-bold text-white mr-2"><i class="fa-solid fa-table-list mr-2 text-yellow-400"></i>Confirmar datos del plano · {{ confirmar.nombre }}</h3>
+                <button @click="extraerPlano" :disabled="confirmar.extrayendo" data-extraer class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-50 text-white px-3 py-1 rounded">{{ confirmar.extrayendo ? 'Extrayendo…' : 'Extraer del plano vigente' }}</button>
+                <button @click="abrirMesaObra({ id: confirmar.proyecto_id, nombre: confirmar.nombre })" class="bg-[#29292e] hover:bg-[#323238] text-white px-3 py-1 rounded">Mesa de Dudas de la obra</button>
+                <span class="flex-1"></span>
+                <button @click="cerrarConfirmar" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p v-if="confirmar.error" class="mx-5 mt-3 bg-red-950 border border-red-700 text-red-200 rounded px-3 py-2 text-xs" data-confirmar-error>{{ confirmar.error }}</p>
+            <p v-if="confirmar.mensaje" class="mx-5 mt-3 bg-green-950 border border-green-700 text-green-200 rounded px-3 py-2 text-xs" data-confirmar-mensaje>{{ confirmar.mensaje }}</p>
+            <div class="flex flex-1 min-h-0">
+                <!-- Tablas extraídas -->
+                <div class="w-80 border-r border-[#29292e] overflow-y-auto p-3 space-y-2 text-xs">
+                    <p v-if="confirmar.cargando" class="text-gray-400">Cargando tablas…</p>
+                    <p v-else-if="!confirmar.tablas.length" class="text-gray-400">Aún no hay tablas extraídas del plano vigente. Pulsa «Extraer del plano vigente».</p>
+                    <button v-for="t in confirmar.tablas" :key="t.id" @click="abrirTabla(t)" :data-tabla="t.clave"
+                            class="w-full text-left rounded-lg border p-2.5 hover:bg-[#222227]"
+                            :class="[confirmar.sel && confirmar.sel.id === t.id ? 'border-yellow-500' : 'border-[#29292e]', t.vigente ? '' : 'opacity-50']">
+                        <span class="flex items-center justify-between gap-2">
+                            <b class="text-white">{{ nombreTabla(t.tabla) }}</b>
+                            <span class="px-1.5 py-0.5 rounded border font-semibold" :class="t.resultado === 'verde' ? 'bg-green-950 text-green-300 border-green-700' : 'bg-red-950 text-red-300 border-red-700'">{{ t.resultado }}</span>
+                        </span>
+                        <span class="block text-gray-400 mt-1">pág. {{ t.pagina }} · hoja {{ t.hoja }} · {{ t.nivel_rango }}</span>
+                        <span v-if="t.resultado === 'rojo'" class="block text-red-300 mt-1">Falla: {{ t.comprobaciones.filter(c => !c.ok).map(c => c.comprobacion).join(', ') }}</span>
+                        <span v-if="!t.vigente" class="block text-orange-300 mt-1">No vigente: {{ t.motivos_no_vigente[0] }}</span>
+                    </button>
+                </div>
+                <!-- Tabla abierta: recorte del plano + filas propuestas -->
+                <div class="flex-1 overflow-y-auto p-4 text-sm">
+                    <p v-if="!confirmar.sel && !confirmar.cargandoTabla" class="text-gray-400 text-xs">Elige una tabla para ver sus filas propuestas junto al recorte del plano.</p>
+                    <p v-if="confirmar.cargandoTabla" class="text-gray-400 text-xs">Cargando la tabla…</p>
+                    <template v-if="confirmar.sel && !confirmar.cargandoTabla">
+                        <div class="flex flex-wrap items-center gap-2 mb-3">
+                            <h4 class="font-bold text-white">{{ nombreTabla(confirmar.sel.tabla) }}</h4>
+                            <span class="text-xs text-gray-400">{{ confirmar.sel.clave }} · pág. {{ confirmar.sel.pagina }} · hoja {{ confirmar.sel.hoja }} · nivel {{ confirmar.sel.nivel_rango }} · extraída {{ formatearFechaHora(confirmar.sel.extraido_en) }}</span>
+                            <span class="text-xs px-2 py-0.5 rounded border font-semibold" :class="confirmar.sel.resultado === 'verde' ? 'bg-green-950 text-green-300 border-green-700' : 'bg-red-950 text-red-300 border-red-700'" data-resultado>{{ confirmar.sel.resultado }}</span>
+                        </div>
+                        <ul class="text-xs space-y-1 mb-4" data-comprobaciones>
+                            <li v-for="c in confirmar.sel.comprobaciones" :key="c.comprobacion" :class="c.ok ? 'text-gray-400' : 'text-red-300'">
+                                <i class="fa-solid mr-1" :class="c.ok ? 'fa-check text-green-400' : 'fa-xmark'"></i>{{ c.comprobacion }}<span v-if="!c.ok">: {{ c.detalle.join('; ') }}</span>
+                                <span v-if="c.certificada" class="text-green-300" data-certificada> (certificada por {{ c.certificada.por }} el {{ formatearFechaHora(c.certificada.en) }} para el vectorial {{ c.certificada.sha256.slice(0, 12) }}…)</span>
+                            </li>
+                        </ul>
+                        <!-- T7n-b (decisión 4): notas de modificación ("PLANO ANTERIOR"): el usuario certifica que la tabla vale para el plano vigente -->
+                        <div v-if="confirmar.sel.certificable" class="mb-4 bg-amber-950/40 border border-amber-700 rounded-lg p-3 text-sm text-amber-100" data-certificar>
+                            <p class="font-semibold">La hoja de esta tabla tiene notas de modificación:</p>
+                            <ul class="text-xs mt-1 list-disc ml-5 text-amber-200">
+                                <li v-for="n in confirmar.sel.comprobaciones.filter(c => c.comprobacion === 'sin_notas_de_modificacion').flatMap(c => c.detalle)" :key="n">{{ n }}</li>
+                            </ul>
+                            <label class="flex items-start gap-2 mt-2 text-xs">
+                                <input type="checkbox" v-model="confirmar.certifico" class="mt-0.5" data-certifico>
+                                <span>Revisé las notas y certifico que esta tabla vale para el plano vigente. <span class="text-amber-300/80">(queda auditado con tu usuario, la tabla y el sha256 del vectorial; si cambia el plano, la certificación se pierde)</span></span>
+                            </label>
+                            <button @click="certificarNotas" :disabled="!confirmar.certifico || confirmar.enviando" data-certificar-notas class="mt-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black text-xs font-bold px-3 py-1.5 rounded">{{ confirmar.enviando ? 'Certificando…' : 'Certificar que vale para el plano vigente' }}</button>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <p class="text-xs text-gray-400 mb-1">Recorte del plano vectorial (pág. {{ confirmar.sel.pagina }})</p>
+                                <div v-if="confirmar.recorteUrl" class="relative border border-[#29292e] rounded bg-white" data-recorte>
+                                    <img :src="confirmar.recorteUrl" class="w-full block" data-recorte-img>
+                                    <div v-if="cajaResaltada" class="absolute pointer-events-none" data-resaltado
+                                         :style="{ left: cajaResaltada.left, top: cajaResaltada.top, width: cajaResaltada.width, height: cajaResaltada.height, border: '2px solid #dc0000', background: 'rgba(220,0,0,0.12)' }"></div>
+                                </div>
+                                <p v-else class="text-xs text-orange-300">{{ confirmar.errorRecorte || 'Sin recorte: la tabla no tiene celdas con posición.' }}</p>
+                                <p class="text-xs text-gray-500 mt-1">Pasa el ratón sobre un valor para ver su celda en el recorte.</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-gray-400 mb-1">Valores propuestos que vienen de esta tabla ({{ confirmar.sel.campos.length }})</p>
+                                <table class="w-full text-xs" data-campos>
+                                    <thead class="text-gray-400 border-b border-[#29292e]"><tr><th class="text-left py-1">Elemento</th><th class="text-left">Campo</th><th class="text-left">Valor</th><th class="text-left">Estado</th></tr></thead>
+                                    <tbody>
+                                        <tr v-for="x in confirmar.sel.campos" :key="x.uid + x.campo" @mouseenter="confirmar.resaltado = x.fuente.bbox" @mouseleave="confirmar.resaltado = null"
+                                            class="border-b border-[#29292e]/50 hover:bg-[#222227]" :data-campo="x.id_elemento + '|' + x.campo">
+                                            <td class="py-1 text-white">{{ x.id_elemento }} <span class="text-gray-500">{{ x.nivel_rango }}</span></td>
+                                            <td class="text-gray-300">{{ x.campo }} <span class="text-gray-500">(fila {{ x.fuente.fila }})</span></td>
+                                            <td :class="x.valor === x.valor_tabla ? 'text-white' : 'text-red-300'">{{ x.valor }}<span v-if="x.valor !== x.valor_tabla" class="block">tabla: {{ x.valor_tabla || '—' }}</span></td>
+                                            <td><span class="px-1.5 py-0.5 rounded border" :class="x.estado === 'confirmado' ? 'bg-green-950 text-green-300 border-green-700' : 'bg-orange-950 text-orange-300 border-orange-600'">{{ x.estado === 'confirmado' ? 'confirmado' : 'pendiente' }}</span></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <p v-if="!confirmar.sel.campos.length" class="text-xs text-gray-400 mt-2">Ningún elemento toma valores de esta tabla.</p>
+                            </div>
+                        </div>
+                        <!-- Confirmación por lote (solo en verde y de la extracción vigente) -->
+                        <div class="mt-5 border-t border-[#29292e] pt-4">
+                            <template v-if="confirmar.sel.confirmable">
+                                <label class="flex items-start gap-2 text-sm text-gray-200 bg-[#121214] border border-yellow-800/50 rounded-lg p-3">
+                                    <input type="checkbox" v-model="confirmar.revisado" class="mt-1" data-revisado>
+                                    <span>Revisé los {{ confirmar.sel.campos.filter(x => x.estado !== 'confirmado').length }} valores pendientes contra el recorte del plano y los confirmo<span v-if="confirmar.sel.identidad_pendiente" data-identidad>, junto con la identidad de los elementos ({{ confirmar.sel.identidad_pendiente }} campos: ID, nivel, ejes, hoja y archivo)</span>. <span class="text-xs text-gray-400">(queda auditado campo por campo con tu usuario y el lote)</span></span>
+                                </label>
+                                <button @click="confirmarTabla" :disabled="!confirmar.revisado || confirmar.enviando" data-confirmar-tabla class="mt-3 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-5 py-2 rounded-lg">{{ confirmar.enviando ? 'Confirmando…' : 'Confirmar tabla completa' }}</button>
+                            </template>
+                            <div v-else-if="confirmar.sel.resultado === 'rojo'" class="bg-red-950/40 border border-red-700 rounded-lg p-3 text-sm text-red-200" data-tabla-roja>
+                                <p class="font-semibold">Esta tabla está en rojo: no se confirma por lote.</p>
+                                <p class="text-xs mt-1">Falló: <b>{{ confirmar.sel.comprobaciones.filter(c => !c.ok).map(c => c.comprobacion).join(', ') }}</b>. Los campos dudosos se resuelven uno por uno en la Mesa de Dudas; los datos que el plano no trae (E-n ↔ nivel, tipo de losa, plantas repetidas) van en «Datos de la obra», y después se vuelve a extraer.</p>
+                                <button @click="abrirMesaObra({ id: confirmar.proyecto_id, nombre: confirmar.nombre })" data-ir-mesa class="mt-2 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold px-3 py-1.5 rounded">Ir a la Mesa de Dudas</button>
+                            </div>
+                            <p v-else class="text-xs text-orange-300" data-no-confirmable>No se puede confirmar: {{ confirmar.sel.motivos_no_confirmable.join('; ') }}.</p>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted } = Vue;
+        const { createApp, ref, computed, onMounted, nextTick } = Vue;
         const API = 'http://localhost:8000';
         const PENDIENTE = 'pendiente de verificar';
 
@@ -253,6 +647,16 @@
                 const errorSync = ref('');
                 const errorDashboard = ref('');
                 const resumenSync = ref(null);
+                const dudasAbiertasLista = ref([]);
+                const errorDudas = ref('');
+                const mesa = ref(null);
+                const planosVigentes = ref({});
+                const avisoObra = ref('');
+                const modalObra = ref(null);
+                const modalDatos = ref(null);
+                const visor = ref(null);
+                const lienzoVisor = ref(null);
+                const confirmar = ref(null);
 
                 // --- Utilidades de presentación (no calculan reglas de ingeniería) ---
                 const esPendiente = (v) => v === null || v === undefined || v === '' || String(v).trim().toLowerCase() === PENDIENTE;
@@ -271,7 +675,19 @@
                     try { return JSON.parse(texto); } catch (e) { return porDefecto; }
                 };
 
-                const ETIQUETAS_CAMPO = { fecha_visita: 'fecha', clase: 'clase', numero: 'número' };
+                // Dudas de etiqueta de foto (T3): campo_afectado = 'elemento_visita:pNNN', id_elemento = la etiqueta literal
+                const esElementoVisita = (d) => String(d.campo_afectado || '').startsWith('elemento_visita:');
+                const fotosDe = (d) => {
+                    const m = /p[aá]ginas?\s+(\d+)(?:\s+a\s+(\d+))?/i.exec(d.pregunta || '');
+                    if (m) {
+                        const desde = Number(m[1]), hasta = m[2] ? Number(m[2]) : desde;
+                        return hasta > desde ? `Fotos p. ${desde}–${hasta}` : `Foto p. ${desde}`;
+                    }
+                    const n = /p(\d+)$/.exec(d.campo_afectado || '');
+                    return n ? `Fotos desde p. ${Number(n[1])}` : 'Fotos';
+                };
+
+                const ETIQUETAS_CAMPO = { fecha_visita: 'fecha', clase: 'clase', numero: 'número', estado: 'estado', archivos_json: 'archivos (PDF)', lector_visita: 'lectura del PDF' };
                 const etiquetaCampo = (c) => ETIQUETAS_CAMPO[c] || c;
 
                 const claseEstado = (estado) => ({
@@ -295,6 +711,23 @@
                     return String(a.nombre_carpeta || '').localeCompare(String(b.nombre_carpeta || ''), 'es');
                 }));
 
+                const dudasAbiertas = (visitaId) => dudasAbiertasLista.value.filter(d => d.visita_id === visitaId).length;
+                const bloqueantesAbiertas = (visitaId) => dudasAbiertasLista.value.filter(d => d.visita_id === visitaId && d.categoria === 'DUDA_BLOQUEANTE').length;
+
+                // AAAA-MM-DDTHH:MM:SS -> DD/MM/AAAA HH:MM (solo presentación)
+                const formatearFechaHora = (valor) => {
+                    const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(String(valor || ''));
+                    if (!m) return '—';
+                    return `${m[3]}/${m[2]}/${m[1]}` + (m[4] ? ` ${m[4]}:${m[5]}` : '');
+                };
+
+                // STP candidatos que dejó el sincronizador en origen_datos_json (lista de grupos de nombres)
+                const candidatosStp = (visita) => {
+                    const origen = parsearJSON(visita.origen_datos_json, {});
+                    const c = origen && origen.stp_candidatos;
+                    return Array.isArray(c) ? c.filter(g => Array.isArray(g) && g.length) : [];
+                };
+
                 const contarConDudas = computed(() => visitas.value.filter(v => v.estado === 'Con dudas').length);
 
                 const leerError = async (res) => {
@@ -305,7 +738,20 @@
                     return `El servidor respondió ${res.status} ${res.statusText}`.trim();
                 };
 
+                const cargarDudasAbiertas = async () => {
+                    try {
+                        const res = await fetch(`${API}/api/dudas?resuelta=false`);
+                        if (!res.ok) throw new Error(await leerError(res));
+                        dudasAbiertasLista.value = await res.json();
+                        errorDudas.value = '';
+                    } catch (e) {
+                        dudasAbiertasLista.value = [];
+                        errorDudas.value = `No se pudieron leer las dudas (${e.message}). Verifica que el servidor FastAPI esté corriendo.`;
+                    }
+                };
+
                 const cargarDatos = async () => {
+                    await cargarDudasAbiertas();
                     try {
                         const res = await fetch(`${API}/api/dashboard`);
                         if (!res.ok) throw new Error(await leerError(res));
@@ -314,6 +760,7 @@
                         proyectos.value = data.proyectos || [];
                         visitas.value = data.visitas || [];
                         ordenes.value = data.ordenes || [];
+                        planosVigentes.value = data.planos_vigentes || {};
                         errorDashboard.value = '';
                         return true;
                     } catch (e) {
@@ -322,10 +769,21 @@
                     }
                 };
 
+                // Abre la Mesa de Dudas de la primera visita (en el orden del tablero) con dudas nuevas respecto de `idsAntes`.
+                // No lo hace si el panel ya está abierto (no se le quita el trabajo a quien está respondiendo).
+                const abrirMesaSiHayDudasNuevas = async (idsAntes) => {
+                    const nuevas = dudasAbiertasLista.value.filter(d => !idsAntes.has(d.id));
+                    if (!nuevas.length || mesa.value) return;
+                    const visitaIds = new Set(nuevas.map(d => d.visita_id));
+                    const primera = visitasOrdenadas.value.find(v => visitaIds.has(v.id));
+                    if (primera) await abrirMesa(primera);
+                };
+
                 const sincronizarDropbox = async () => {
                     if (cargando.value) return;
                     cargando.value = true;
                     errorSync.value = '';
+                    const idsAntes = new Set(dudasAbiertasLista.value.map(d => d.id));
                     try {
                         let res;
                         try {
@@ -348,12 +806,439 @@
                             proyectos: data.proyectos,
                         };
                         await cargarDatos();
+                        await abrirMesaSiHayDudasNuevas(idsAntes);
                     } catch (e) {
                         resumenSync.value = null;
                         errorSync.value = e.message;
                     } finally {
                         cargando.value = false;
                     }
+                };
+
+                // --- Mesa de Dudas ---
+                const cargarDudasVisita = async () => {
+                    if (!mesa.value) return;
+                    mesa.value.cargando = true;
+                    try {
+                        const url = mesa.value.visita ? `${API}/api/dudas?visita_id=${encodeURIComponent(mesa.value.visita.id)}`
+                            : `${API}/api/dudas?sin_visita=true&proyecto_id=${encodeURIComponent(mesa.value.proyecto.id)}`;
+                        const res = await fetch(url);
+                        if (!res.ok) throw new Error(await leerError(res));
+                        const dudas = await res.json();
+                        mesa.value.dudas = dudas.map(d => ({ ...d, _entrada: d.campo_afectado === 'estado' ? '' : '', _stp: 0, _error: '', _guardando: false }))
+                            .sort((a, b) => (a.resuelta - b.resuelta) || (a.id - b.id));
+                        mesa.value.error = '';
+                    } catch (e) {
+                        mesa.value.error = `No hay conexión con el backend en ${API} (${e.message}). Verifica que el servidor FastAPI esté corriendo.`;
+                    } finally {
+                        mesa.value.cargando = false;
+                    }
+                };
+
+                const abrirMesa = async (visita) => {
+                    mesa.value = { visita, dudas: [], cargando: true, error: '', aviso: '', conflicto: '' };
+                    await cargarDudasVisita();
+                };
+                const cerrarMesa = () => { mesa.value = null; };
+
+                const enviarRespuesta = async (d, cuerpo) => {
+                    if (d._guardando) return;
+                    d._guardando = true;
+                    d._error = '';
+                    mesa.value.aviso = '';
+                    mesa.value.conflicto = '';
+                    try {
+                        let res;
+                        try {
+                            res = await fetch(`${API}/api/dudas/${d.id}`, {
+                                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo),
+                            });
+                        } catch (e) {
+                            throw new Error(`El backend no responde en ${API}. Verifica que el servidor FastAPI esté corriendo.`);
+                        }
+                        if (!res.ok) throw Object.assign(new Error(await leerError(res)), { status: res.status });  // 404 / 409 / 422: no se cierra nada
+                        const r = await res.json();
+                        const visitaId = mesa.value.visita && mesa.value.visita.id;
+                        await cargarDatos();
+                        const actualizada = visitas.value.find(v => v.id === visitaId);
+                        if (actualizada) mesa.value.visita = actualizada;
+                        await cargarDudasVisita();
+                        mesa.value.aviso = `Duda ${r.duda_id} respondida.` + (r.valor_aplicado ? ` Valor aplicado: ${r.campo === 'fecha_visita' ? formatearFecha(r.valor_aplicado) : (typeof r.valor_aplicado === 'object' ? (r.valor_aplicado.estado || '') : r.valor_aplicado)}.` : '')
+                            + (r.estado_visita ? ` Estado de la visita: ${r.estado_visita}.` : '');
+                    } catch (e) {
+                        if (e.status === 409 && mesa.value) {
+                            // Otra persona (o otra pestaña) ya la respondió: se recargan las dudas y se avisa
+                            const visitaId = mesa.value.visita && mesa.value.visita.id;
+                            mesa.value.conflicto = e.message;
+                            await cargarDatos();
+                            const actualizada = visitas.value.find(v => v.id === visitaId);
+                            if (actualizada) mesa.value.visita = actualizada;
+                            await cargarDudasVisita();
+                        } else {
+                            d._error = e.message;
+                        }
+                    } finally {
+                        d._guardando = false;
+                    }
+                };
+
+                const responder = (d, texto) => enviarRespuesta(d, { respuesta: String(texto || '').trim() });
+
+                const responderEstado = (d) => {
+                    const cuerpo = { respuesta: d._entrada };
+                    if (d._entrada === 'corresponde') {
+                        const grupos = candidatosStp(mesa.value.visita);
+                        if (grupos.length > 1) cuerpo.stp = grupos[d._stp];  // con uno solo, el backend lo toma
+                    }
+                    return enviarRespuesta(d, cuerpo);
+                };
+
+                // --- Etapa 2 · T4n: nueva obra, cambiar plano y datos de la obra ---
+                const formObraVacio = () => ({ nombre: '', tipo: 'Supervisión', cliente: '', supervisor: '', no_solicitud: '',
+                    no_licencia: '', residente_obra: '', direccion_obra: '', provincia: '', sector: '', inicio_obra: '' });
+                const modalBase = (extra) => ({ proyecto_id: null, nombre: '', datos: formObraVacio(), etiqueta_revision: '',
+                    fecha_plano: '', vectorial: null, sellado: null, certifico: false, enviando: false, error: '', ...extra });
+                const abrirNuevaObra = () => { modalObra.value = modalBase({ modo: 'nueva', titulo: 'Nueva obra' }); };
+                const abrirCambiarPlano = (p) => {
+                    modalObra.value = modalBase({ modo: 'cambiar', proyecto_id: p.id, nombre: p.nombre,
+                        titulo: planosVigentes.value[p.id] ? 'Cambiar plano' : 'Subir planos' });
+                };
+                const cerrarModalObra = () => { modalObra.value = null; };
+
+                const enviarObra = async () => {
+                    const m = modalObra.value;
+                    if (!m || m.enviando) return;
+                    m.error = '';
+                    if (m.modo === 'nueva' && !m.proyecto_id && !m.datos.nombre.trim()) { m.error = 'Escribe el nombre de la obra.'; return; }
+                    if (!m.vectorial || !m.sellado) { m.error = 'Elige los dos archivos: el vectorial y el sellado.'; return; }
+                    if (!m.certifico) { m.error = 'Marca la casilla: certifico que el vectorial corresponde a la versión sellada.'; return; }
+                    m.enviando = true;
+                    try {
+                        if (m.modo === 'nueva' && !m.proyecto_id) {
+                            const cuerpo = Object.fromEntries(Object.entries(m.datos).filter(([, v]) => String(v).trim() !== ''));
+                            const r = await fetch(`${API}/api/proyectos`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
+                            if (!r.ok) throw new Error(await leerError(r));
+                            const creada = (await r.json()).proyecto;
+                            m.proyecto_id = creada.id;   // si la subida falla, la obra ya existe: se reintenta solo la subida
+                            m.nombre = creada.nombre;
+                        }
+                        const f = new FormData();
+                        f.append('vectorial', m.vectorial);
+                        f.append('sellado', m.sellado);
+                        f.append('certifico', 'true');
+                        f.append('etiqueta_revision', m.etiqueta_revision || '');
+                        f.append('fecha_plano', m.fecha_plano || '');
+                        let r2;
+                        try { r2 = await fetch(`${API}/api/proyectos/${m.proyecto_id}/planos`, { method: 'POST', body: f }); }
+                        catch (e) { throw new Error(`El backend no responde en ${API}.`); }
+                        if (!r2.ok) throw new Error((m.modo === 'nueva' ? 'La obra se creó, pero los planos no se subieron: ' : '') + await leerError(r2));
+                        const plano = (await r2.json()).plano;
+                        await cargarDatos();
+                        avisoObra.value = `${m.nombre || m.proyecto_id}: plano rev. ${plano.revision} vigente` +
+                            (plano.elementos_marcados ? ` · ${plano.elementos_marcados} elementos marcados «plano cambiado: revisar»` : '') +
+                            (plano.aviso_paginas ? ` · ${plano.aviso_paginas}` : '') + '. Quedan dudas por responder: equivalencias E-n ↔ nivel, tipos de losa y emparejamiento de hojas (botón «Datos de la obra»).';
+                        modalObra.value = null;
+                    } catch (e) {
+                        m.error = e.message;
+                    } finally {
+                        m.enviando = false;
+                    }
+                };
+
+                const gruposDatos = [
+                    { tipo: 'equivalencia_nivel', titulo: 'Equivalencias E-n ↔ nivel', ayuda: '(el plano rotula entrepisos E-1…E-n)', ejemplo: 'E-1 = SOTANO S7\nE-2 = SOTANO S6' },
+                    { tipo: 'losa_tipo', titulo: 'Tipo de cada losa (A, B o C)', ayuda: '(la tabla de acero en losa no dice a qué L# corresponde)', ejemplo: 'L1 = A\nL2 = B' },
+                    { tipo: 'hoja_par', titulo: 'Emparejamiento de hojas vectorial → sellado', ayuda: '(número de hoja del vectorial = número de hoja del sellado, o «sin pareja»)', ejemplo: '1 = 1\n9 = sin pareja' },
+                    { tipo: 'techo', titulo: 'Nivel de las plantas repetidas', ayuda: '(página del vectorial = nivel; solo para plantas con el mismo título en varias hojas, p. ej. dos «DE TECHO»)', ejemplo: '32 = TECHO\n33 = TECHO ASCENSOR', sinDuda: true },
+                ];
+                const abrirDatosObra = async (p) => {
+                    modalDatos.value = { proyecto_id: p.id, nombre: p.nombre, texto: { equivalencia_nivel: '', losa_tipo: '', hoja_par: '', techo: '' },
+                        completo: { equivalencia_nivel: false, losa_tipo: false, hoja_par: false, techo: false }, mensajes: {}, errores: {}, enviando: false };
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${p.id}/datos-obra`);
+                        if (!r.ok) return;
+                        const d = (await r.json()).datos || {};
+                        for (const g of gruposDatos) modalDatos.value.texto[g.tipo] = (d[g.tipo] || []).map(x => `${x.clave} = ${x.valor}`).join('\n');
+                    } catch (e) { /* se abre vacío */ }
+                };
+                const guardarDatos = async (tipo) => {
+                    const m = modalDatos.value;
+                    if (!m || m.enviando) return;
+                    m.errores[tipo] = false;
+                    const items = m.texto[tipo].split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+                        const i = l.search(/[=:]/);
+                        return i < 0 ? { clave: l, valor: '' } : { clave: l.slice(0, i).trim(), valor: l.slice(i + 1).trim() };
+                    });
+                    m.enviando = true;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/datos-obra`, { method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo, items, completo: !!m.completo[tipo] }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        m.mensajes[tipo] = `Guardados ${d.guardados} datos como confirmados` + (d.dudas_cerradas ? ' · duda cerrada.' : '.');
+                    } catch (e) {
+                        m.errores[tipo] = true;
+                        m.mensajes[tipo] = e.message;
+                    } finally {
+                        m.enviando = false;
+                    }
+                };
+
+                // --- Etapa 2 · T5n: visor del vectorial y recuadros ---
+                // Coordenadas guardadas = PUNTOS del PDF en el marco visual de la hoja; la imagen se pide a `dpi` y se muestra con `zoom`.
+                const tiposRecuadro = [{ tipo: 'localizacion', titulo: 'LOCALIZACION' }, { tipo: 'detalle', titulo: 'DETALLE' }];
+                const ptAPx = (v) => v * (visor.value.info.dpi / 72) * visor.value.zoom;
+                const pxAPt = (v) => v / visor.value.zoom * 72 / visor.value.info.dpi;
+                const redondear = (r) => r.map(v => Math.round(v * 100) / 100);
+
+                const abrirVisor = async (p) => {
+                    visor.value = { proyecto_id: p.id, nombre: p.nombre, hojas: [], pagina: 1, info: null, urlImagen: '', zoom: 1,
+                        elementos: [], uid: '', tipo: 'localizacion', propuestas: null, borrador: { localizacion: null, detalle: null },
+                        previas: {}, error: '', mensaje: '', ocupado: false, dibujando: null };
+                    try {
+                        const [ri, re] = await Promise.all([fetch(`${API}/api/proyectos/${p.id}/visor/indice`), fetch(`${API}/api/proyectos/${p.id}/elementos`)]);
+                        if (!ri.ok) throw new Error(await leerError(ri));
+                        visor.value.hojas = (await ri.json()).hojas;
+                        visor.value.elementos = re.ok ? (await re.json()).elementos : [];
+                        visor.value.pagina = (visor.value.hojas[0] || { pagina: 1 }).pagina;
+                        await cargarHoja();
+                    } catch (e) { visor.value.error = e.message; }
+                };
+                const cargarHoja = async () => {
+                    const v = visor.value;
+                    v.error = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/visor/hojas/${v.pagina}/info?dpi=60`);
+                        if (!r.ok) throw new Error(await leerError(r));
+                        v.info = await r.json();
+                        v.urlImagen = `${API}/api/proyectos/${v.proyecto_id}/visor/hojas/${v.pagina}.png?dpi=${v.info.dpi}`;
+                        await ajustarVisor();
+                    } catch (e) { v.error = e.message; }
+                };
+                const zoomVisor = (f) => { visor.value.zoom = Math.min(8, Math.max(0.1, visor.value.zoom * f)); };
+                const ajustarVisor = async () => {
+                    await nextTick();
+                    const v = visor.value, c = lienzoVisor.value;
+                    if (v && v.info && c) v.zoom = Math.max(0.1, Math.min(8, ((c.clientWidth || window.innerWidth * 0.6) - 8) / v.info.ancho_px));
+                };
+                const elementoVisor = computed(() => visor.value ? visor.value.elementos.find(e => e.uid === visor.value.uid) : null);
+                const guardadoDe = (tipo) => {
+                    const e = elementoVisor.value;
+                    const g = e ? (tipo === 'localizacion' ? e.recorte_planta : e.recorte_detalle) : null;
+                    return g && g.rect ? g : null;
+                };
+                const cambiarElemento = () => {
+                    const v = visor.value;
+                    v.propuestas = null; v.borrador = { localizacion: null, detalle: null }; v.previas = {}; v.mensaje = ''; v.error = '';
+                    for (const t of ['localizacion', 'detalle']) {
+                        const g = guardadoDe(t);
+                        if (g) v.borrador[t] = null;
+                    }
+                    const g = guardadoDe(v.tipo) || guardadoDe('localizacion') || guardadoDe('detalle');
+                    if (g && g.pagina !== v.pagina) { v.pagina = g.pagina; cargarHoja(); }
+                };
+                const proponerVisor = async () => {
+                    const v = visor.value;
+                    v.ocupado = true; v.error = ''; v.mensaje = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/elementos/${v.uid}/propuesta`, { method: 'POST' });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        v.propuestas = await r.json();
+                        const l = v.propuestas.localizacion;
+                        if (l && l.rect && l.pagina !== v.pagina) { v.pagina = l.pagina; await cargarHoja(); }
+                    } catch (e) { v.error = e.message; } finally { v.ocupado = false; }
+                };
+                const usarPropuesta = async (tipo) => {
+                    const v = visor.value, p = v.propuestas && v.propuestas[tipo];
+                    if (!p || !p.rect) return;
+                    v.borrador[tipo] = { pagina: p.pagina, rect: p.rect.slice(), origen: 'confirmado' };
+                    v.tipo = tipo;
+                    if (p.pagina !== v.pagina) { v.pagina = p.pagina; await cargarHoja(); }
+                };
+                const rectActual = (tipo) => {
+                    const v = visor.value, b = v.borrador[tipo], g = guardadoDe(tipo);
+                    return b ? { pagina: b.pagina, rect: b.rect } : (g ? { pagina: g.pagina, rect: g.rect } : null);
+                };
+                const estadoRecuadro = (tipo) => {
+                    const v = visor.value;
+                    if (v.borrador[tipo]) return { texto: 'sin guardar', clase: 'bg-blue-950 text-blue-300 border-blue-700' };
+                    if (guardadoDe(tipo)) return { texto: 'confirmado', clase: 'bg-green-950 text-green-300 border-green-700' };
+                    const p = v.propuestas && v.propuestas[tipo];
+                    if (p) return { texto: p.rect ? 'propuesto · pendiente de verificar' : 'pendiente de verificar', clase: 'bg-orange-950 text-orange-300 border-orange-600' };
+                    return { texto: 'pendiente de verificar', clase: 'bg-orange-950 text-orange-300 border-orange-600' };
+                };
+                const detalleRecuadro = (tipo) => {
+                    const v = visor.value, b = v.borrador[tipo], g = guardadoDe(tipo), p = v.propuestas && v.propuestas[tipo];
+                    const fmt = (x) => `p${x.pagina} · [${x.rect.map(n => Math.round(n)).join(', ')}] pt`;
+                    if (b) return `${fmt(b)} (${b.origen})`;
+                    if (g) return `${fmt(g)} · ${g.origen} por ${g.confirmado_por}`;
+                    if (p) return p.rect ? `${fmt(p)} · fuente: ${p.fuente.metodo}${p.fuente.rotulo ? ' «' + p.fuente.rotulo + '»' : ''}` : p.motivo;
+                    return 'Sin recuadro: elige un elemento y pulsa «Proponer recuadros», o dibújalo.';
+                };
+                const guardarRecuadro = async (tipo) => {
+                    const v = visor.value, b = v.borrador[tipo];
+                    if (!b || !v.uid) return;
+                    v.error = ''; v.mensaje = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/elementos/${v.uid}/recuadro`, { method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo, pagina: b.pagina, rect: b.rect, origen: b.origen }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const g = (await r.json()).guardado;
+                        const e = v.elementos.find(x => x.uid === v.uid);
+                        if (tipo === 'localizacion') e.recorte_planta = g; else e.recorte_detalle = g;
+                        v.borrador[tipo] = null;
+                        v.mensaje = `${tipo === 'localizacion' ? 'LOCALIZACION' : 'DETALLE'} guardado (confirmado por ${g.confirmado_por}).`;
+                        await vistaPrevia(tipo);
+                    } catch (e) { v.error = e.message; }
+                };
+                const vistaPrevia = async (tipo) => {
+                    const v = visor.value, ra = rectActual(tipo);
+                    if (!ra) return;
+                    v.error = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${v.proyecto_id}/visor/vista-previa`, { method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo, pagina: ra.pagina, rect: ra.rect }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        if (v.previas[tipo]) URL.revokeObjectURL(v.previas[tipo]);
+                        v.previas[tipo] = URL.createObjectURL(await r.blob());
+                    } catch (e) { v.error = e.message; v.previas[tipo] = ''; }
+                };
+                // Cajas sobre la hoja actual: guardadas (verde), propuestas (amarillo) y borrador / dibujo en curso (azul)
+                const cajasVisibles = computed(() => {
+                    const v = visor.value, out = [];
+                    if (!v) return out;
+                    for (const t of ['localizacion', 'detalle']) {
+                        const g = guardadoDe(t), p = v.propuestas && v.propuestas[t], b = v.borrador[t];
+                        const sigla = t === 'localizacion' ? 'LOC' : 'DET';
+                        if (g && g.pagina === v.pagina) out.push({ clave: `guardado-${t}`, rect: g.rect, etiqueta: `${sigla} confirmado`, borde: '2px solid #22c55e', fondo: 'rgba(34,197,94,0.08)', etiquetaFondo: '#22c55e' });
+                        if (p && p.rect && p.pagina === v.pagina) out.push({ clave: `propuesta-${t}`, rect: p.rect, etiqueta: `${sigla} propuesto (pendiente)`, borde: '2px dashed #eab308', fondo: 'rgba(234,179,8,0.08)', etiquetaFondo: '#eab308' });
+                        if (b && b.pagina === v.pagina) out.push({ clave: `borrador-${t}`, rect: b.rect, etiqueta: `${sigla} sin guardar`, borde: '2px solid #3b82f6', fondo: 'rgba(59,130,246,0.12)', etiquetaFondo: '#60a5fa' });
+                    }
+                    return out;
+                });
+                const puntoDeEvento = (ev) => {
+                    const r = ev.currentTarget.getBoundingClientRect();
+                    return [pxAPt(ev.clientX - r.left), pxAPt(ev.clientY - r.top)];
+                };
+                const empezarDibujo = (ev) => { visor.value.dibujando = puntoDeEvento(ev); };
+                const seguirDibujo = (ev) => {
+                    const v = visor.value;
+                    if (!v.dibujando) return;
+                    const [x, y] = puntoDeEvento(ev), [x0, y0] = v.dibujando;
+                    v.borrador[v.tipo] = { pagina: v.pagina, rect: redondear([Math.min(x0, x), Math.min(y0, y), Math.max(x0, x), Math.max(y0, y)]), origen: 'dibujado' };
+                };
+                const terminarDibujo = () => {
+                    const v = visor.value;
+                    if (!v || !v.dibujando) return;
+                    v.dibujando = null;
+                    const b = v.borrador[v.tipo];
+                    if (b && (b.rect[2] - b.rect[0] < 5 || b.rect[3] - b.rect[1] < 5)) v.borrador[v.tipo] = null;   // un clic suelto no es un recuadro
+                };
+
+
+                // --- Etapa 2 · T7n: confirmar los datos extraídos del plano (por lote) y Mesa de Dudas de la obra ---
+                const NOMBRES_TABLA = { acero_en_losa: 'Acero en losa', zapata_muro_lindero: 'Zapata de muro lindero', fc_por_rango: "f'c por rango", losa_aligerada: 'Losa aligerada' };
+                const nombreTabla = (t) => NOMBRES_TABLA[t] || t;
+                const esDudaPlano = (d) => /^T[67]n:/.test(String(d.campo_afectado || ''));
+                const dudasObra = (proyectoId) => dudasAbiertasLista.value.filter(d => d.proyecto_id === proyectoId && !d.visita_id).length;
+                const abrirMesaObra = async (p) => {
+                    mesa.value = { visita: null, proyecto: { id: p.id, nombre: p.nombre }, dudas: [], cargando: true, error: '', aviso: '', conflicto: '' };
+                    await cargarDudasVisita();
+                };
+                const cargarTablas = async () => {
+                    const m = confirmar.value;
+                    m.cargando = true;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas`);
+                        if (!r.ok) throw new Error(await leerError(r));
+                        m.tablas = (await r.json()).tablas;
+                    } catch (e) { m.error = e.message; } finally { m.cargando = false; }
+                };
+                const abrirConfirmar = async (p) => {
+                    confirmar.value = { proyecto_id: p.id, nombre: p.nombre, tablas: [], cargando: true, error: '', mensaje: '', extrayendo: false,
+                        sel: null, cargandoTabla: false, recorteUrl: '', errorRecorte: '', resaltado: null, revisado: false, certifico: false, enviando: false };
+                    await cargarTablas();
+                };
+                const cerrarConfirmar = () => {
+                    if (confirmar.value && confirmar.value.recorteUrl) URL.revokeObjectURL(confirmar.value.recorteUrl);
+                    confirmar.value = null;
+                };
+                const abrirTabla = async (t) => {
+                    const m = confirmar.value;
+                    m.cargandoTabla = true; m.revisado = false; m.certifico = false; m.resaltado = null; m.errorRecorte = '';
+                    if (m.recorteUrl) URL.revokeObjectURL(m.recorteUrl);
+                    m.recorteUrl = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas/${t.id}`);
+                        if (!r.ok) throw new Error(await leerError(r));
+                        m.sel = await r.json();
+                        if (m.sel.recorte) {
+                            // Mismo recorte nítido que DETALLE (vista previa del visor de T5n), con el bbox de las celdas de la tabla
+                            const rr = await fetch(`${API}/api/proyectos/${m.proyecto_id}/visor/vista-previa`, { method: 'POST',
+                                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo: 'detalle', pagina: m.sel.pagina, rect: m.sel.recorte }) });
+                            if (rr.ok) m.recorteUrl = URL.createObjectURL(await rr.blob()); else m.errorRecorte = await leerError(rr);
+                        }
+                    } catch (e) { m.error = e.message; m.sel = null; } finally { m.cargandoTabla = false; }
+                };
+                // Celda resaltada sobre el recorte, en % del recorte (el PNG conserva la proporción del rect)
+                const cajaResaltada = computed(() => {
+                    const m = confirmar.value;
+                    if (!m || !m.sel || !m.sel.recorte || !m.resaltado) return null;
+                    const [x0, y0, x1, y1] = m.sel.recorte, b = m.resaltado, w = x1 - x0, h = y1 - y0;
+                    return { left: `${(b[0] - x0) / w * 100}%`, top: `${(b[1] - y0) / h * 100}%`, width: `${(b[2] - b[0]) / w * 100}%`, height: `${(b[3] - b[1]) / h * 100}%` };
+                });
+                const confirmarTabla = async () => {
+                    const m = confirmar.value;
+                    if (!m || !m.sel || !m.revisado || m.enviando) return;
+                    m.enviando = true; m.error = ''; m.mensaje = '';
+                    const id = m.sel.id;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas/${id}/confirmar`, { method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmo: true, extraido_en: m.sel.extraido_en }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        m.mensaje = `Lote ${d.lote}: ${d.confirmados} valores confirmados en ${d.elementos} elementos` +
+                            (d.conflictos ? ` · ${d.conflictos} ya confirmados con otro valor (duda abierta en la Mesa)` : '') +
+                            (d.dudas_cerradas.length ? ` · ${d.dudas_cerradas.length} dudas cerradas` : '') + '.';
+                    } catch (e) { m.error = e.message; } finally { m.enviando = false; }
+                    await cargarTablas();
+                    await cargarDudasAbiertas();
+                    const t = m.tablas.find(x => x.id === id);
+                    if (t) await abrirTabla(t);
+                };
+                // T7n-b (decisión 4): certificar que la tabla con notas de modificación vale para el plano vigente
+                const certificarNotas = async () => {
+                    const m = confirmar.value;
+                    if (!m || !m.sel || !m.certifico || m.enviando) return;
+                    m.enviando = true; m.error = ''; m.mensaje = '';
+                    const id = m.sel.id;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas/${id}/certificar-notas`, { method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ certifico: true, extraido_en: m.sel.extraido_en }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        m.mensaje = `Tabla ${d.tabla} certificada para el vectorial ${d.sha256.slice(0, 12)}…: queda en ${d.resultado}` +
+                            (d.dudas_cerradas.length ? ` · ${d.dudas_cerradas.length} duda cerrada` : '') + '.';
+                    } catch (e) { m.error = e.message; } finally { m.enviando = false; }
+                    await cargarTablas();
+                    await cargarDudasAbiertas();
+                    const t = m.tablas.find(x => x.id === id);
+                    if (t) await abrirTabla(t);
+                };
+                const extraerPlano = async () => {
+                    const m = confirmar.value;
+                    m.extrayendo = true; m.error = ''; m.mensaje = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/extraer-diseno`, { method: 'POST' });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        const verdes = d.tablas.filter(t => t.resultado === 'verde').length;
+                        m.mensaje = `Extracción rev. ${d.revision}: ${d.tablas.length} tablas (${verdes} en verde), ${d.elementos.propuestos} elementos propuestos, ` +
+                            `${d.dudas_creadas} dudas nuevas, ${d.dudas_cerradas} cerradas. Todo queda pendiente hasta que lo confirmes.`;
+                        m.sel = null;
+                    } catch (e) { m.error = e.message; } finally { m.extrayendo = false; }
+                    await cargarTablas();
+                    await cargarDudasAbiertas();
                 };
 
                 const contarOTs = (estado) => ordenes.value.filter(o => o.estado === estado).length;
@@ -365,9 +1250,18 @@
 
                 return {
                     stats, proyectos, visitas, ordenes, cargando, errorSync, errorDashboard, resumenSync,
-                    visitasOrdenadas, contarConDudas,
-                    esPendiente, formatearFecha, parsearJSON, etiquetaCampo, claseEstado, nombreProyecto,
-                    sincronizarDropbox, contarOTs, filtrarOTs
+                    visitasOrdenadas, contarConDudas, dudasAbiertasLista, errorDudas, mesa,
+                    esPendiente, formatearFecha, formatearFechaHora, parsearJSON, etiquetaCampo, claseEstado, nombreProyecto,
+                    dudasAbiertas, bloqueantesAbiertas, candidatosStp, abrirMesa, cerrarMesa, responder, responderEstado,
+                    esElementoVisita, fotosDe,
+                    sincronizarDropbox, contarOTs, filtrarOTs,
+                    planosVigentes, avisoObra, modalObra, modalDatos, gruposDatos,
+                    abrirNuevaObra, abrirCambiarPlano, cerrarModalObra, enviarObra, abrirDatosObra, guardarDatos,
+                    visor, lienzoVisor, tiposRecuadro, elementoVisor, cajasVisibles, ptAPx, abrirVisor, cargarHoja, zoomVisor, ajustarVisor,
+                    cambiarElemento, proponerVisor, usarPropuesta, rectActual, estadoRecuadro, detalleRecuadro, guardarRecuadro,
+                    vistaPrevia, empezarDibujo, seguirDibujo, terminarDibujo,
+                    confirmar, nombreTabla, esDudaPlano, dudasObra, abrirMesaObra, abrirConfirmar, cerrarConfirmar, abrirTabla,
+                    cajaResaltada, confirmarTabla, certificarNotas, extraerPlano
                 };
             }
         }).mount('#app');

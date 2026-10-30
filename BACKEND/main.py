@@ -1,4 +1,7 @@
 # backend/main.py
+import getpass
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
+from mesa_dudas import router as router_mesa_dudas
+from obras import planos_vigentes, router as router_obras
+from plano.confirmacion import router as router_confirmacion
+from plano.extractor import router as router_extractor
+from visor import router as router_visor
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
 RUTA_FRONTEND = Path(__file__).resolve().parent.parent / "FRONTEND"
@@ -41,6 +49,14 @@ class ProyectoUpdate(BaseModel):
     fecha_comprometida: Optional[str] = None
     prioridad: Optional[str] = None
     observaciones: Optional[str] = None
+    # Etapa 3 · T7a: datos de cabecera de los informes (los llena Steven, P11)
+    no_solicitud: Optional[str] = None
+    no_licencia: Optional[str] = None
+    residente_obra: Optional[str] = None
+    direccion_obra: Optional[str] = None
+    provincia: Optional[str] = None
+    sector: Optional[str] = None
+    inicio_obra: Optional[str] = None  # Etapa 2 · T4n
 
 
 # --- ENDPOINTS API ---
@@ -71,31 +87,43 @@ def obtener_dashboard():
         "proyectos": proyectos,
         "visitas": visitas,
         "ordenes": ot,
+        "planos_vigentes": planos_vigentes(),   # Etapa 2 · T4n: resumen del plano vigente de cada obra
     }
 
 
 @app.patch("/api/proyectos/{proyecto_id}")
 def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
-    conn = get_connection()
-    campos = []
-    valores = []
-
-    for k, v in data.dict(exclude_unset=True).items():
-        campos.append(f"{k} = ?")
-        valores.append(v)
-
-    if not campos:
+    cambios = data.model_dump(exclude_unset=True)
+    if not cambios:
         raise HTTPException(status_code=400, detail="No hay campos para actualizar.")
 
-    valores.append(proyecto_id)
-    query = f"UPDATE proyectos SET {', '.join(campos)}, actualizado = CURRENT_TIMESTAMP WHERE id = ?"
-
-    cursor = conn.execute(query, valores)
-    conn.commit()
-    conn.close()
-
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+    # Una transacción: el UPDATE y su fila de auditoría (valor anterior y nuevo) van juntos (§1.5)
+    conn = get_connection()
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN")
+        anterior = conn.execute("SELECT * FROM proyectos WHERE id = ?", (proyecto_id,)).fetchone()
+        if anterior is None:
+            conn.execute("ROLLBACK")
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+        campos = ", ".join(f"{k} = ?" for k in cambios)
+        conn.execute(f"UPDATE proyectos SET {campos}, actualizado = CURRENT_TIMESTAMP WHERE id = ?",
+                     (*cambios.values(), proyecto_id))
+        detalle = {k: {"anterior": anterior[k], "nuevo": v} for k, v in cambios.items()}
+        conn.execute("""
+            INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (datetime.now().isoformat(), getpass.getuser(), "PROYECTOS", "ACTUALIZAR_PROYECTO",
+              proyecto_id, json.dumps(detalle, ensure_ascii=False)))
+        conn.execute("COMMIT")
+    except HTTPException:
+        raise
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
     return {"status": "ok", "mensaje": "Proyecto actualizado correctamente."}
 
@@ -118,6 +146,13 @@ MENSAJE_PROCESAR_COLA_DESACTIVADO = (
 def procesar_cola():
     """Desactivado (Etapa 1 · T9): se conectará a los generadores en la Etapa 3. No toca la BD."""
     raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
+
+
+app.include_router(router_mesa_dudas)
+app.include_router(router_obras)  # Etapa 2 · T4n: crear obra, planos y datos del usuario
+app.include_router(router_visor)  # Etapa 2 · T5n: visor del vectorial y recuadros
+app.include_router(router_extractor)  # Etapa 2 · T6n: extractor de las tablas de aplicación del vectorial
+app.include_router(router_confirmacion)  # Etapa 2 · T7n: confirmación de los datos extraídos del plano
 
 
 # Se monta al final para que /api/* conserve prioridad. Un solo servidor local entrega
