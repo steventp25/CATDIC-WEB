@@ -16,6 +16,7 @@ from obras import planos_vigentes, router as router_obras
 from plano.confirmacion import router as router_confirmacion
 from plano.extractor import router as router_extractor
 from visor import router as router_visor
+from visitas_obra import router as router_visitas_obra
 from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
 RUTA_FRONTEND = Path(__file__).resolve().parent.parent / "FRONTEND"
@@ -153,6 +154,7 @@ app.include_router(router_obras)  # Etapa 2 · T4n: crear obra, planos y datos d
 app.include_router(router_visor)  # Etapa 2 · T5n: visor del vectorial y recuadros
 app.include_router(router_extractor)  # Etapa 2 · T6n: extractor de las tablas de aplicación del vectorial
 app.include_router(router_confirmacion)  # Etapa 2 · T7n: confirmación de los datos extraídos del plano
+app.include_router(router_visitas_obra)  # Etapa 2 · T4v: subir visita o conectar la obra con Dropbox
 
 
 # Se monta al final para que /api/* conserve prioridad. Un solo servidor local entrega
