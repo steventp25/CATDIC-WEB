@@ -8,7 +8,6 @@
 #   sin sobrescribir jamás (sufijo " v2") y con su sha256.
 # - Lo que el usuario escribe (E-n ↔ nivel, L# → tipo, emparejamiento de hojas, techos) queda `confirmado` con
 #   auditoría; lo que falta queda pendiente en una DUDA_BLOQUEANTE de la obra.
-import getpass
 import hashlib
 import json
 import re
@@ -24,7 +23,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 import config
-from database import get_connection
+from database import get_connection, usuario_auditoria
 from reglas_ingenieria import PENDIENTE, _es_fecha_ddmmaaaa_valida
 
 router = APIRouter()
@@ -56,7 +55,7 @@ class ErrorObra(Exception):
 # ---------- Utilidades ----------
 
 def _usuario() -> str:
-    return getpass.getuser()
+    return usuario_auditoria()  # T7n-b: "steven" (antes getpass)
 
 
 def _ahora() -> str:

@@ -9,7 +9,11 @@
 # - UNO POR UNO, por la Mesa de Dudas: la respuesta a una duda T6n: que apunta a un único campo de un elemento se valida
 #   y queda confirmada (la fuente es el usuario).
 # Auditoría por campo: usuario, lote, elemento, campo, valor y fuente (archivo, revisión, página, hoja y bbox).
-# Lo que no viene de una celda de la tabla (ID, nivel, ejes, el L#→tipo dado en "Datos de la obra") no se confirma aquí.
+# T7n-b (decisiones de Steven, 30/10/2026):
+# - el lote confirma también la IDENTIDAD de los elementos propuestos desde la tabla (ID, nivel impreso, ejes, hoja y
+#   archivo), cada campo con su fila CONFIRMAR_CAMPO; lo que siga 'pendiente de verificar' no se confirma;
+# - el usuario CERTIFICA que una tabla con notas de modificación vale para el plano vigente (auditado; atado al plano
+#   y al sha256 del vectorial). El L#→tipo de "Datos de la obra" llega ya confirmado desde el extractor.
 import json
 import re
 import uuid
@@ -101,6 +105,49 @@ def campos_de_tabla(conn, t) -> List[Dict]:
     return out
 
 
+CAMPOS_IDENTIDAD = ("id_elemento", "nivel_rango", "ejes", "hoja_plano_origen", "archivo_plano_origen")
+_ORIGEN_IDENTIDAD = {
+    "id_elemento": {"acero_en_losa": "rótulo L# en la planta de la hoja", "losa_aligerada": "fila de la tabla",
+                    "zapata_muro_lindero": "rótulo de la tabla y su fila"},
+    "nivel_rango": "título impreso de la planta de la hoja",
+    "ejes": "'—' (losa: CLAUDE.md §4.4)",
+    "hoja_plano_origen": "número de hoja impreso en el vectorial",
+    "archivo_plano_origen": "vectorial vigente de la obra",
+}
+
+
+def identidad_de_tabla(conn, t) -> List[Dict]:
+    """T7n-b (decisión 2): ID, nivel, ejes, hoja y archivo de los elementos que esta extracción propuso desde la tabla
+    (`elementos_json`), con su estado y su fuente. Lo que siga pendiente de verificar se lista, pero no se confirma."""
+    out = []
+    for uid in _cargar(t["elementos_json"], []):
+        e = conn.execute("SELECT * FROM elementos_diseno WHERE uid = ?", (uid,)).fetchone()
+        if e is None:
+            continue
+        fuente = _cargar(e["fuente_json"], {})
+        if fuente.get("extractor") != ex.EXTRACTOR or fuente.get("tabla") != t["clave"]:
+            continue
+        estado = _cargar(e["estado_campos_json"], {})
+        for campo in CAMPOS_IDENTIDAD:
+            origen = _ORIGEN_IDENTIDAD[campo]
+            out.append({"uid": uid, "id_elemento": e["id_elemento"], "nivel_rango": e["nivel_rango"], "ejes": e["ejes"],
+                        "campo": campo, "valor": e[campo], "estado": estado.get(campo, ""),
+                        "fuente": {"archivo": fuente.get("archivo"), "revision": fuente.get("revision"),
+                                   "sha256": fuente.get("sha256"), "pagina": t["pagina"], "hoja": t["hoja"],
+                                   "origen": origen.get(t["tabla"], "") if isinstance(origen, dict) else origen,
+                                   "bbox": fuente.get("bbox_id") if campo == "id_elemento" else None}})
+    return out
+
+
+def _identidad_esperada(c: Dict) -> Optional[str]:
+    """Hoja y archivo deben coincidir con los de la tabla y su fuente; si no, el lote se detiene."""
+    if c["campo"] == "hoja_plano_origen":
+        return c["fuente"]["hoja"]
+    if c["campo"] == "archivo_plano_origen":
+        return c["fuente"]["archivo"]
+    return None
+
+
 def _bbox_tabla(filas: List[Dict]) -> Optional[List[float]]:
     cajas = []
     for f in filas:
@@ -146,10 +193,15 @@ def detalle_tabla(proyecto_id: str, tabla_id: int) -> Dict:
         d["motivos_no_vigente"] = ex.vigencia_tabla(conn, t, plano)
         d["vigente"] = not d["motivos_no_vigente"]
         d["campos"] = campos_de_tabla(conn, t)
+        d["identidad"] = identidad_de_tabla(conn, t)
+        d["identidad_pendiente"] = len(_identidad_pendiente(d["identidad"]))
     finally:
         conn.close()
     d["recorte"] = _recorte(plano, t["pagina"], _bbox_tabla(d["filas"]))
     d["confirmable"], d["motivos_no_confirmable"] = _confirmable(d)
+    # T7n-b: la nota de modificación se certifica desde la pantalla (solo de la extracción vigente)
+    d["certificable"] = d["vigente"] and any(c["comprobacion"] == ex.COMPROBACION_NOTAS and not c["ok"]
+                                             for c in d["comprobaciones"])
     return d
 
 
@@ -157,7 +209,7 @@ def _confirmable(d: Dict) -> Tuple[bool, List[str]]:
     motivos = list(d["motivos_no_vigente"])
     if d["resultado"] != "verde":
         motivos.append("la tabla está en rojo: " + ", ".join(c["comprobacion"] for c in d["comprobaciones"] if not c["ok"]))
-    if not any(c["estado"] != CONFIRMADO for c in d["campos"]):
+    if not any(c["estado"] != CONFIRMADO for c in d["campos"]) and not _identidad_pendiente(d["identidad"]):
         motivos.append("no hay campos pendientes que vengan de esta tabla")
     return not motivos, motivos
 
@@ -211,13 +263,21 @@ def _confirmar(conn, proyecto_id: str, tabla_id: int, extraido_en: Optional[str]
             raise ErrorObra(f"No se confirma: {c['id_elemento']} / {c['campo']} = '{c['valor']}' ya no coincide con la "
                             f"tabla ('{c['valor_tabla']}'). Vuelve a extraer.", 409)
         por_uid.setdefault(c["uid"], []).append(c)
-    if not por_uid and not conflictos:
+    identidad_por_uid: Dict[str, List[Dict]] = {}
+    for c in _identidad_pendiente(identidad_de_tabla(conn, t)):
+        esperado = _identidad_esperada(c)
+        if esperado is not None and c["valor"] != esperado:
+            raise ErrorObra(f"No se confirma: {c['id_elemento']} / {c['campo']} = '{c['valor']}' no coincide con la "
+                            f"tabla ('{esperado}'). Vuelve a extraer.", 409)
+        identidad_por_uid.setdefault(c["uid"], []).append(c)
+    if not por_uid and not conflictos and not identidad_por_uid:
         raise ErrorObra("No hay campos pendientes que vengan de esta tabla.", 409)
 
-    for uid, lista in por_uid.items():
+    identidad = []
+    for uid in dict.fromkeys([*por_uid, *identidad_por_uid]):
         e = conn.execute("SELECT * FROM elementos_diseno WHERE uid = ?", (uid,)).fetchone()
         estado, fuente = _cargar(e["estado_campos_json"], {}), _cargar(e["fuente_json"], {})
-        for c in lista:
+        for c in por_uid.get(uid, []):
             estado[f"datos_diseno.{c['campo']}"] = CONFIRMADO
             fuente["valores"][c["campo"]]["confirmado"] = {"lote": lote, "por": usuario, "en": ahora}
             _auditar_campo(conn, usuario, ahora, uid, {"lote": lote, "tabla_id": tabla_id, "tabla": t["clave"],
@@ -225,6 +285,16 @@ def _confirmar(conn, proyecto_id: str, tabla_id: int, extraido_en: Optional[str]
                                                          "ejes": c["ejes"], "campo": c["campo"], "valor": c["valor"],
                                                          "fuente": c["fuente"]})
             confirmados.append(c)
+        for c in identidad_por_uid.get(uid, []):
+            # T7n-b (decisión 2): la identidad del elemento, campo por campo
+            estado[c["campo"]] = CONFIRMADO
+            fuente.setdefault("identidad", {})[c["campo"]] = {"valor": c["valor"], **c["fuente"],
+                                                              "confirmado": {"lote": lote, "por": usuario, "en": ahora}}
+            _auditar_campo(conn, usuario, ahora, uid, {"lote": lote, "tabla_id": tabla_id, "tabla": t["clave"],
+                                                         "id_elemento": c["id_elemento"], "nivel_rango": c["nivel_rango"],
+                                                         "ejes": c["ejes"], "campo": c["campo"], "valor": c["valor"],
+                                                         "fuente": c["fuente"]})
+            identidad.append(c)
         conn.execute("""UPDATE elementos_diseno SET estado_campos_json = ?, pendientes_json = ?, fuente_json = ?,
                         actualizado = ? WHERE uid = ?""",
                      (_json(estado), _json(sorted(k for k, v in estado.items() if v != CONFIRMADO)), _json(fuente),
@@ -246,11 +316,16 @@ def _confirmar(conn, proyecto_id: str, tabla_id: int, extraido_en: Optional[str]
             abiertas.append(c["id_elemento"] + " / " + c["campo"])
     cerradas = _cerrar_dudas_sin_causa(conn, proyecto_id, confirmados, t["clave"], usuario, ahora, lote)
     resumen = {"lote": lote, "tabla_id": tabla_id, "tabla": t["clave"], "confirmados": len(confirmados),
-               "elementos": len(por_uid), "ya_confirmados": len(ya), "conflictos": len(conflictos),
+               "elementos": len(por_uid), "identidad_confirmados": len(identidad),
+               "elementos_identidad": len(identidad_por_uid), "ya_confirmados": len(ya), "conflictos": len(conflictos),
                "dudas_abiertas": abiertas, "dudas_cerradas": cerradas}
     conn.execute("INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json) "
                  "VALUES (?, ?, ?, 'CONFIRMAR_LOTE', ?, ?)", (ahora, usuario, MODULO, proyecto_id, _json(resumen)))
     return resumen
+
+
+def _identidad_pendiente(identidad: List[Dict]) -> List[Dict]:
+    return [c for c in identidad if c["estado"] != CONFIRMADO and c["valor"] not in (None, "", PENDIENTE)]
 
 
 def _auditar_campo(conn, usuario: str, ahora: str, uid: str, detalle: Dict):
@@ -278,6 +353,69 @@ def _cerrar_dudas_sin_causa(conn, proyecto_id: str, confirmados: List[Dict], cla
                      "VALUES (?, ?, ?, 'CERRAR_DUDAS_CONFIRMACION', ?, ?)",
                      (ahora, usuario, MODULO, proyecto_id, _json({"lote": lote, "dudas_cerradas": cerradas})))
     return cerradas
+
+
+# ---------- Certificar las notas de modificación (T7n-b, decisión 4) ----------
+
+def certificar_notas(proyecto_id: str, tabla_id: int, extraido_en: Optional[str] = None,
+                     usuario: Optional[str] = None) -> Dict:
+    """
+    El usuario certifica que la tabla vale para el plano vigente pese a sus notas de modificación ("PLANO ANTERIOR").
+    Queda guardado para ESE plano y sha256 (al volver a extraer la duda no se reabre; si cambian, se pierde), la
+    comprobación pasa a verde, la duda de la nota se cierra y todo queda auditado (usuario, tabla, sha256).
+    """
+    usuario = usuario or _usuario()
+    conn = get_connection()
+    try:
+        _proyecto(conn, proyecto_id)
+        _transaccion(conn)
+        try:
+            resumen = _certificar(conn, proyecto_id, tabla_id, extraido_en, usuario)
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    return resumen
+
+
+def _certificar(conn, proyecto_id: str, tabla_id: int, extraido_en: Optional[str], usuario: str) -> Dict:
+    t = _tabla(conn, proyecto_id, tabla_id)
+    plano = _plano_vigente(conn, proyecto_id)
+    motivos = ex.vigencia_tabla(conn, t, plano)
+    if motivos:
+        raise ErrorObra("No se certifica: " + "; ".join(motivos) + ".", 409)
+    if extraido_en is not None and extraido_en != t["extraido_en"]:
+        raise ErrorObra("No se certifica: la tabla se volvió a extraer mientras la revisabas. Ábrela de nuevo.", 409)
+    comprobaciones = _cargar(t["comprobaciones_json"], [])
+    nota = next((c for c in comprobaciones if c["comprobacion"] == ex.COMPROBACION_NOTAS), None)
+    if nota is None or nota["ok"]:
+        raise ErrorObra("No se certifica: la tabla no tiene notas de modificación sin certificar.", 409)
+    ahora, sha = _ahora(), plano["vectorial_sha256"]
+    cur = conn.execute("""INSERT INTO certificaciones_tabla (proyecto_id, plano_id, clave, sha256, notas_json,
+                          certificado_por, certificado_en) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       (proyecto_id, plano["id"], t["clave"], sha, _json(nota["detalle"]), usuario, ahora))
+    cert = {"id": cur.lastrowid, "certificado_por": usuario, "certificado_en": ahora, "sha256": sha}
+    comprobaciones = [ex.comprobacion_certificada(c, cert) if c["comprobacion"] == ex.COMPROBACION_NOTAS else c
+                      for c in comprobaciones]
+    resultado = "verde" if all(c["ok"] for c in comprobaciones) else "rojo"
+    conn.execute("UPDATE tablas_extraidas SET comprobaciones_json = ?, resultado = ? WHERE id = ?",
+                 (_json(comprobaciones), resultado, tabla_id))
+    cerradas = []
+    for r in conn.execute("""SELECT id FROM dudas_y_hallazgos WHERE proyecto_id = ? AND visita_id IS NULL AND resuelta = 0
+                             AND id_elemento = '(obra)' AND campo_afectado = ?""",
+                          (proyecto_id, f"{ex.ORIGEN_DUDA}{t['clave']}:nota")).fetchall():
+        conn.execute("UPDATE dudas_y_hallazgos SET resuelta = 1, respuesta_usuario = ?, resuelto_en = ? WHERE id = ?",
+                     (f"Tabla certificada para el plano vigente (sha256 {sha[:12]}…, {usuario})", ahora, r["id"]))
+        cerradas.append(r["id"])
+    resumen = {"certificacion_id": cert["id"], "tabla_id": tabla_id, "tabla": t["clave"], "pagina": t["pagina"],
+               "hoja": t["hoja"], "plano_id": plano["id"], "revision": plano["revision"], "sha256": sha,
+               "notas": nota["detalle"], "resultado": resultado, "dudas_cerradas": cerradas}
+    conn.execute("INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json) "
+                 "VALUES (?, ?, ?, 'CERTIFICAR_NOTAS', ?, ?)", (ahora, usuario, MODULO, proyecto_id, _json(resumen)))
+    return resumen
 
 
 # ---------- Uno por uno, desde la Mesa de Dudas ----------
@@ -420,5 +558,20 @@ def api_confirmar_tabla(proyecto_id: str, tabla_id: int, cuerpo: CuerpoConfirmar
         raise HTTPException(status_code=422, detail="Falta la confirmación explícita ('confirmo': true).")
     try:
         return confirmar_tabla(proyecto_id, tabla_id, cuerpo.extraido_en)
+    except ErrorObra as exc:
+        raise _http(exc)
+
+
+class CuerpoCertificar(BaseModel):
+    certifico: bool = False            # certificación explícita del usuario (casilla de la pantalla)
+    extraido_en: Optional[str] = None  # la extracción que el usuario revisó
+
+
+@router.post("/api/proyectos/{proyecto_id}/tablas-extraidas/{tabla_id}/certificar-notas")
+def api_certificar_notas(proyecto_id: str, tabla_id: int, cuerpo: CuerpoCertificar):
+    if not cuerpo.certifico:
+        raise HTTPException(status_code=422, detail="Falta la certificación explícita ('certifico': true).")
+    try:
+        return certificar_notas(proyecto_id, tabla_id, cuerpo.extraido_en)
     except ErrorObra as exc:
         raise _http(exc)
