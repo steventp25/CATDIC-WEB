@@ -352,7 +352,13 @@ def test_terra_living_real():
 
 @pytest.mark.skipif(not _real(*P16_REAL).is_dir(), reason="Dropbox real de P16 no disponible")
 def test_p16_real_no_soportado():
-    r = escanear_proyecto(_real(*P16_REAL))
+    carpeta = _real(*P16_REAL)
+    r = escanear_proyecto(carpeta)
+    if (carpeta / SUBRUTA_VISITAS).is_dir():
+        # Desde el 30/10/2026 P16 tiene LEVANTAMIENTO\VISITA A OBRA: ya no es "no soportado" (lección 15:
+        # la prueba sigue al Dropbox real en vez de fallar porque cambió el entorno)
+        assert r["layout"] != LAYOUT_NO_SOPORTADO
+        return
     assert r["layout"] == LAYOUT_NO_SOPORTADO and r["visitas"] == []
 
 
