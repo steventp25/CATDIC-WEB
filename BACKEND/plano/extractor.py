@@ -46,6 +46,9 @@ METROS = {"H", "Bw1", "Bw2", "h1", "h2", "B", "h", "Df", "Ht(m)", "HB(m)"}
 BARRAS = {"DIR. X", "DIR. Y", "AS. ADIC.", "ACERO Asl", "AsxC", "AsxB", "AsyC", "AsyB"}
 SEPARACION = {"ACERO Ast"}
 SIN_ACERO = "-"           # en la tabla de losa aligerada de P16, '-' es un valor impreso (sin acero en esa franja)
+COLUMNA_AS_ADIC = "AS. ADIC."
+REGLA_AS_ADIC_VACIA = ("Regla de Steven (T7n-b, 30/10/2026): la celda AS. ADIC. vacía en la tabla de acero en losa "
+                       "significa 'sin acero adicional'")
 
 _RE_PREFIJO_PLANTA = re.compile(r"^PLANTA\s+(?:(?:ESTRUCTURAL|EST\.?)\s+)?(?:DE\s+)?")
 _RE_NUM = re.compile(r"^\d+(?:\.\d+)?$")
@@ -210,6 +213,27 @@ def comprobar_fc(tabla: Dict, equivalencias: Dict[str, str]) -> Tuple[List[Dict]
             _comprobacion("rangos_sin_choque", choques)], unicos
 
 
+def as_adic_vacia_sin_acero(t: Dict):
+    """
+    T7n-b (decisión 3): en la tabla de acero en losa, una celda AS. ADIC. VACÍA (sin texto en su columna y fila, ni
+    texto descartado encima) se lee como 'sin acero adicional' (SIN_ACERO). Su bbox es el cruce de la columna con
+    la fila y la celda lleva `vacia` y la regla. Solo AS. ADIC.: cualquier otra celda vacía sigue siendo una duda.
+    """
+    cab = t.get("encabezados", {}).get(COLUMNA_AS_ADIC)
+    if cab is None:
+        return
+    for f in t["filas"]:
+        celda, et = f["celdas"].get(COLUMNA_AS_ADIC), f["etiqueta"]["bbox"]
+        if celda is None or celda["bbox"] is not None or et is None:
+            continue
+        caja = [cab[0], et[1], cab[2], et[3]]
+        if any(d["bbox"][0] < caja[2] + 12 and d["bbox"][2] > caja[0] - 12 and d["bbox"][1] < caja[3] + 4
+               and d["bbox"][3] > caja[1] - 4 for d in t["descartadas"]):
+            continue  # hay texto cerca que no encajó: no está vacía, es una duda
+        f["celdas"][COLUMNA_AS_ADIC] = {"valor": SIN_ACERO, "bbox": caja, "vacia": True, "regla": REGLA_AS_ADIC_VACIA}
+        f["pendientes"] = [c for c in f["pendientes"] if c != COLUMNA_AS_ADIC]
+
+
 # ---------- Lectura del vectorial (sin BD) ----------
 
 def _sha256(ruta: Path) -> str:
@@ -279,6 +303,8 @@ def leer_vectorial(ruta: Path, datos_usuario: Dict[str, Dict[str, str]]) -> Dict
                     t["nivel"] = niveles[p]["nivel"]
                     t["clave"] = f"p{p}:fc_por_rango"
                 else:
+                    if t["tabla"] == "acero_en_losa":
+                        as_adic_vacia_sin_acero(t)
                     t["comprobaciones"] = comprobar_celdas(t["filas"], t["descartadas"], t["avisos"])
                     if t["tabla"] == "acero_en_losa":
                         t["comprobaciones"].append(comprobar_espesor(t["filas"]))
@@ -291,7 +317,7 @@ def leer_vectorial(ruta: Path, datos_usuario: Dict[str, Dict[str, str]]) -> Dict
                         t["nivel"] = niveles[p]["nivel"]
                         t["clave"] = f"p{p}:{t['tabla']}"
                 t["comprobaciones"].append(_comprobacion(
-                    "sin_notas_de_modificacion", [f"'{n['texto'][:120]}…'" for n in notas]))
+                    COMPROBACION_NOTAS, [f"'{n['texto'][:120]}…'" for n in notas]))
                 tablas.append(t)
     _comparar_fc_entre_hojas([t for t in tablas if t["tabla"] == "fc_por_rango"])
     _marcar_copias([t for t in tablas if t["tabla"] == "acero_en_losa"], _firma_celdas)
@@ -341,14 +367,17 @@ def _comparar_fc_entre_hojas(tablas: List[Dict]):
 def _fuente_celda(t: Dict, celda: Optional[Dict], columna: str, fila: str) -> Optional[Dict]:
     if celda is None or celda["bbox"] is None:
         return None
-    return {"tabla": t["clave"], "pagina": t["pagina"], "hoja": t["hoja"], "fila": fila, "columna": columna,
-            "bbox": celda["bbox"]}
+    fuente = {"tabla": t["clave"], "pagina": t["pagina"], "hoja": t["hoja"], "fila": fila, "columna": columna,
+              "bbox": celda["bbox"]}
+    if celda.get("vacia"):
+        fuente.update({"celda_vacia": True, "regla": celda["regla"]})
+    return fuente
 
 
 def _propuesta(t: Dict, id_elemento: str, tipo: str, nivel: str, ejes: str, archivo: str) -> Dict:
     return {"id_elemento": id_elemento, "tipo_elemento": tipo, "nivel_rango": nivel, "ejes": ejes,
             "hoja_plano_origen": t["hoja"], "archivo_plano_origen": archivo, "datos": {}, "tabla": t["clave"],
-            "explicados": set(), "bbox_id": []}
+            "explicados": set(), "bbox_id": [], "confirmados": set()}
 
 
 def _poner(prop: Dict, campo: str, valor: Optional[str], fuente: Optional[Dict]):
@@ -384,8 +413,11 @@ def _fc_para(prop: Dict, nivel: str, tablas_fc: List[Dict], equivalencias: Dict[
     prop["niveles_cubiertos"] = es
 
 
-def proponer(lectura: Dict, datos_usuario: Dict[str, Dict[str, str]], archivo: str) -> Tuple[List[Dict], List[Dict]]:
-    """(propuestas, dudas) a partir de la lectura. Ningún valor se completa por vecindad ni se deduce."""
+def proponer(lectura: Dict, datos_usuario: Dict[str, Dict[str, str]], archivo: str,
+             referencias: Optional[Dict[Tuple[str, str], Dict]] = None) -> Tuple[List[Dict], List[Dict]]:
+    """(propuestas, dudas) a partir de la lectura. Ningún valor se completa por vecindad ni se deduce. `referencias`:
+    (tipo, clave) → auditoría de "Datos de la obra" donde el usuario dio ese dato (T7n-b)."""
+    referencias = referencias or {}
     equivalencias = datos_usuario.get("equivalencia_nivel", {})
     tipos_losa = datos_usuario.get("losa_tipo", {})
     dudas = list(lectura["dudas"])
@@ -401,7 +433,7 @@ def proponer(lectura: Dict, datos_usuario: Dict[str, Dict[str, str]], archivo: s
             dudas.append({"id_elemento": "(obra)", "campo": f"{t['clave']}:celda:{d['bbox']}",
                           "texto": f"Texto '{d['texto']}' de la tabla {t['tabla']} en {ref} no encaja en la tabla "
                                    f"({d['motivo']}); no se asigna a ninguna fila ({PENDIENTE})."})
-        for n in t["notas_de_modificacion"]:
+        for n in ([] if t.get("certificacion") else t["notas_de_modificacion"]):
             dudas.append({"id_elemento": "(obra)", "campo": f"{t['clave']}:nota",
                           "texto": f"Nota de modificación en {ref}, donde está la tabla {t['tabla']}: "
                                    f"'{n['texto'][:300]}'. Confirma que la tabla vale para el plano vigente ({PENDIENTE})."})
@@ -453,7 +485,12 @@ def proponer(lectura: Dict, datos_usuario: Dict[str, Dict[str, str]], archivo: s
                 if t["nivel"] == PENDIENTE:
                     p["explicados"].add("nivel_rango")
                 tipo = tipos_losa.get(lid)
-                _poner(p, "tipo_losa", tipo, {"origen": "usuario", "dato": "losa_tipo", "clave": lid} if tipo else None)
+                # T7n-b (decisión 1): el L#→tipo lo dio el usuario en "Datos de la obra": llega confirmado, con la
+                # referencia a esa auditoría.
+                _poner(p, "tipo_losa", tipo, {"origen": "usuario", "via": "datos_de_la_obra", "dato": "losa_tipo",
+                                              "clave": lid, **referencias.get(("losa_tipo", lid), {})} if tipo else None)
+                if tipo:
+                    p["confirmados"].add("tipo_losa")
                 if tipo is None:
                     p["explicados"].add("tipo_losa")
                     dudas.append({"id_elemento": lid, "campo": "losa_tipo",
@@ -508,7 +545,9 @@ def _validar(prop: Dict) -> Dict:
         "ejes": prop["ejes"], "hoja_plano_origen": prop["hoja_plano_origen"],
         "archivo_plano_origen": prop["archivo_plano_origen"],
         "datos_diseno": {c: d["valor"] for c, d in prop["datos"].items()}})
-    estado = {c: PENDIENTE_ESTADO for c in r["estado_campos"]}  # T6n: nada queda confirmado sin el usuario (T7n)
+    # T6n: nada queda confirmado sin el usuario (T7n); lo que el usuario dio en "Datos de la obra" sí (T7n-b)
+    estado = {c: CONFIRMADO if v == CONFIRMADO and c.removeprefix("datos_diseno.") in prop["confirmados"]
+              else PENDIENTE_ESTADO for c, v in r["estado_campos"].items()}
     dudas = [d for d in r["dudas"] if d["campo_afectado"].removeprefix("datos_diseno.") not in prop["explicados"]
              and d["campo_afectado"] not in prop["explicados"]]
     return {"norm": r["elemento_normalizado"], "estado": estado, "dudas": dudas}
@@ -556,11 +595,61 @@ def _datos_usuario(conn, proyecto_id: str) -> Dict[str, Dict[str, str]]:
     return out
 
 
+def referencias_datos_obra(conn, proyecto_id: str) -> Dict[Tuple[str, str], Dict]:
+    """(tipo, clave) → la última auditoría GUARDAR_DATOS_OBRA donde el usuario dio el valor vigente de ese dato
+    (T7n-b, decisión 1: la fuente del L#→tipo es el usuario, con referencia a esa auditoría)."""
+    vigentes = {(r["tipo"], r["clave"]): r["valor"] for r in conn.execute(
+        "SELECT tipo, clave, valor FROM obra_datos_usuario WHERE proyecto_id = ? AND estado = 'confirmado'", (proyecto_id,))}
+    out: Dict[Tuple[str, str], Dict] = {}
+    for a in conn.execute("""SELECT id, fecha_hora, usuario, detalle_json FROM auditoria WHERE modulo = 'OBRAS'
+                             AND accion = 'GUARDAR_DATOS_OBRA' AND entidad_id = ? ORDER BY id""", (proyecto_id,)):
+        try:
+            detalle = json.loads(a["detalle_json"] or "{}")
+        except ValueError:
+            continue
+        for d in detalle.get("datos") or []:
+            k = (detalle.get("tipo"), d.get("clave"))
+            if k in vigentes and d.get("nuevo") == vigentes[k]:
+                out[k] = {"auditoria_id": a["id"], "por": a["usuario"], "en": a["fecha_hora"]}
+    return out
+
+
+COMPROBACION_NOTAS = "sin_notas_de_modificacion"
+
+
+def certificaciones_vigentes(conn, plano: Dict) -> Dict[str, Dict]:
+    """clave de tabla → certificación de sus notas de modificación para ESTE plano y sha256 (T7n-b, decisión 4). Si
+    el plano o su sha256 cambian no hay ninguna: la certificación se pierde."""
+    return {r["clave"]: dict(r) for r in conn.execute(
+        "SELECT * FROM certificaciones_tabla WHERE plano_id = ? AND sha256 = ? ORDER BY id",
+        (plano["id"], plano["vectorial_sha256"]))}
+
+
+def comprobacion_certificada(c: Dict, cert: Dict) -> Dict:
+    """La comprobación de notas, pasada por la certificación del usuario (guarda quién, cuándo y las notas)."""
+    notas = c.get("detalle") or (c.get("certificada") or {}).get("notas", [])
+    return {"comprobacion": COMPROBACION_NOTAS, "ok": True, "detalle": [],
+            "certificada": {"id": cert["id"], "por": cert["certificado_por"], "en": cert["certificado_en"],
+                            "sha256": cert["sha256"], "notas": notas}}
+
+
+def aplicar_certificacion(t: Dict, cert: Optional[Dict]):
+    """Con la certificación del usuario, la comprobación de notas de la tabla pasa y su duda no se abre."""
+    if not cert or not t.get("notas_de_modificacion"):
+        return
+    t["certificacion"] = cert
+    t["comprobaciones"] = [comprobacion_certificada(c, cert) if c["comprobacion"] == COMPROBACION_NOTAS else c
+                           for c in t["comprobaciones"]]
+
+
 def _escribir_elemento(conn, proyecto_id: str, plano: Dict, prop: Dict, v: Dict, ahora: str) -> Tuple[str, Optional[str]]:
     """
     Inserta o actualiza una propuesta. Devuelve (resultado, uid): 'nuevo', 'actualizado', 'sin_cambios' o 'choque'.
-    Un campo `confirmado` de la fila existente nunca se toca.
+    Un campo `confirmado` de la fila existente nunca se toca, salvo el que el usuario dio en "Datos de la obra"
+    (T7n-b): ese sigue al dato del usuario. Deja en prop["auditar_usuario"] los campos del usuario que quedan
+    confirmados con un valor nuevo, y en prop["dudas_extra"] la incoherencia que deja un cambio de tipo.
     """
+    prop["auditar_usuario"], prop["dudas_extra"] = [], []
     norm = v["norm"]
     clave = (proyecto_id, norm["id_elemento"], norm["nivel_rango"], norm["ejes"])
     datos = norm["datos_diseno_json"]
@@ -580,10 +669,13 @@ def _escribir_elemento(conn, proyecto_id: str, plano: Dict, prop: Dict, v: Dict,
                             fuente_json, pendientes_json, plano_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                          (uid, *clave, norm["tipo_elemento"], norm["hoja_plano_origen"], norm["archivo_plano_origen"],
                           json.dumps(datos, ensure_ascii=False), json.dumps(v["estado"], ensure_ascii=False), ahora,
-                          json.dumps(fuente, ensure_ascii=False), json.dumps(sorted(v["estado"]), ensure_ascii=False),
+                          json.dumps(fuente, ensure_ascii=False),
+                          json.dumps(sorted(c for c, e in v["estado"].items() if e != CONFIRMADO), ensure_ascii=False),
                           plano["id"]))
         except sqlite3.IntegrityError:
             return "choque", None
+        prop["auditar_usuario"] = [(c, datos[c], None) for c in sorted(prop["confirmados"])
+                                   if v["estado"].get(f"datos_diseno.{c}") == CONFIRMADO]
         return "nuevo", uid
     fuente_previa = json.loads(previo["fuente_json"] or "{}")
     if fuente_previa.get("extractor") != EXTRACTOR or fuente_previa.get("plano_id") != plano["id"] \
@@ -594,10 +686,24 @@ def _escribir_elemento(conn, proyecto_id: str, plano: Dict, prop: Dict, v: Dict,
     nuevos_datos, nuevo_estado, valores_fuente = dict(datos_prev), dict(estado_prev), dict(fuente_previa.get("valores", {}))
     for c, val in datos.items():
         k = f"datos_diseno.{c}"
-        if estado_prev.get(k) == CONFIRMADO:
+        del_usuario = c in prop["confirmados"] and v["estado"].get(k) == CONFIRMADO
+        if estado_prev.get(k) == CONFIRMADO and not del_usuario:
             continue
-        nuevos_datos[c], nuevo_estado[k] = val, PENDIENTE_ESTADO
+        if del_usuario and (estado_prev.get(k) != CONFIRMADO or datos_prev.get(c) != val):
+            prop["auditar_usuario"].append((c, val, datos_prev.get(c)))
+        nuevos_datos[c], nuevo_estado[k] = val, v["estado"].get(k, PENDIENTE_ESTADO)
         valores_fuente[c] = fuente["valores"].get(c)
+    tipo = nuevos_datos.get("tipo_losa")
+    viejos = sorted(c for c, f in valores_fuente.items() if isinstance(f, dict) and f.get("tabla") == prop["tabla"]
+                    and nuevo_estado.get(f"datos_diseno.{c}") == CONFIRMADO and tipo not in (None, PENDIENTE)
+                    and f.get("fila") not in (None, tipo))
+    if viejos:
+        # El usuario cambió el L#→tipo después de confirmar valores de la fila del tipo anterior: esos no se tocan.
+        prop["dudas_extra"].append({
+            "id_elemento": norm["id_elemento"], "campo": f"tipo_losa_cambiado@{norm['nivel_rango']}",
+            "texto": f"El tipo de la losa {norm['id_elemento']} es ahora '{tipo}' (Datos de la obra), pero "
+                     f"{', '.join(viejos)} ya están confirmados con la fila de otro tipo. No se sobrescriben: indica "
+                     f"cuál vale ({PENDIENTE})."})
     columnas = {"tipo_elemento": norm["tipo_elemento"], "hoja_plano_origen": norm["hoja_plano_origen"],
                 "archivo_plano_origen": norm["archivo_plano_origen"]}
     cambios = {c: val for c, val in columnas.items() if estado_prev.get(c) != CONFIRMADO and previo[c] != val}
@@ -642,6 +748,8 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
             raise ErrorObra("La obra no tiene un plano vigente: sube primero el vectorial y el sellado.", 409)
         plano = dict(plano)
         datos_usuario = _datos_usuario(conn, proyecto_id)
+        referencias = referencias_datos_obra(conn, proyecto_id)
+        certificaciones = certificaciones_vigentes(conn, plano)
     finally:
         conn.close()
     ruta = Path(plano["vectorial_ruta"])
@@ -651,7 +759,9 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
     if sha_antes != plano["vectorial_sha256"]:
         raise ErrorObra(f"El vectorial '{ruta.name}' no coincide con el sha256 con que se subió: no se lee.", 409)
     lectura = leer_vectorial(ruta, datos_usuario)
-    props, dudas = proponer(lectura, datos_usuario, plano["vectorial_archivo"])
+    for t in lectura["tablas"]:
+        aplicar_certificacion(t, certificaciones.get(t["clave"]))
+    props, dudas = proponer(lectura, datos_usuario, plano["vectorial_archivo"], referencias)
     validados = [(p, _validar(p)) for p in props]
     sha_despues = _sha256(ruta)
     if sha_despues != sha_antes:
@@ -685,6 +795,16 @@ def extraer_diseno(proyecto_id: str, usuario: Optional[str] = None) -> Dict:
                                            f"({PENDIENTE})."})
                     continue
                 p["uid"] = uid
+                dudas.extend(p["dudas_extra"])
+                for campo, valor, anterior in p["auditar_usuario"]:
+                    # T7n-b (decisión 1): el dato del usuario llega confirmado; queda su fila CONFIRMAR_CAMPO
+                    conn.execute("INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json) "
+                                 "VALUES (?, ?, 'EXTRACTOR', 'CONFIRMAR_CAMPO', ?, ?)",
+                                 (ahora, usuario, uid, json.dumps({
+                                     "lote": None, "via": "datos_de_la_obra", "id_elemento": norm["id_elemento"],
+                                     "nivel_rango": norm["nivel_rango"], "ejes": norm["ejes"], "campo": campo,
+                                     "valor": valor, "valor_anterior": anterior,
+                                     "fuente": p["datos"][campo]["fuente"]}, ensure_ascii=False)))
                 for d in v["dudas"]:
                     dudas.append({"id_elemento": norm["id_elemento"], "campo": f"{d['campo_afectado']}@{norm['nivel_rango']}",
                                   "texto": d["descripcion_pregunta"]})

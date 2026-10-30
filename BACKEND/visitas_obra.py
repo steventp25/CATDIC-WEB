@@ -10,7 +10,6 @@
 # - (b) La carpeta se valida (absoluta, dentro de la raíz de Dropbox, que exista y termine en LEVANTAMIENTO\VISITA A
 #   OBRA), se guarda en la obra con auditoría y se corre el sincronizador de la Etapa 1. Dropbox es SOLO LECTURA.
 # - En los dos casos, al terminar se corre el lector de visitas (Etapa 3 · T3) sobre las visitas nuevas.
-import getpass
 import hashlib
 import json
 import re
@@ -26,7 +25,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 
 import config
-from database import _respaldar_bd, get_connection
+from database import _respaldar_bd, get_connection, usuario_auditoria
 from obras import ErrorObra, _http, _nombre_seguro, _proyecto, _transaccion
 from reglas_ingenieria import PENDIENTE, _es_fecha_ddmmaaaa_valida
 from sync import lector_visita
@@ -73,7 +72,7 @@ _RE_PROHIBIDOS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def _usuario() -> str:
-    return getpass.getuser()
+    return usuario_auditoria()  # T7n-b: "steven"
 
 
 def _ahora() -> str:

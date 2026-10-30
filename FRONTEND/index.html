@@ -635,8 +635,21 @@
                         <ul class="text-xs space-y-1 mb-4" data-comprobaciones>
                             <li v-for="c in confirmar.sel.comprobaciones" :key="c.comprobacion" :class="c.ok ? 'text-gray-400' : 'text-red-300'">
                                 <i class="fa-solid mr-1" :class="c.ok ? 'fa-check text-green-400' : 'fa-xmark'"></i>{{ c.comprobacion }}<span v-if="!c.ok">: {{ c.detalle.join('; ') }}</span>
+                                <span v-if="c.certificada" class="text-green-300" data-certificada> (certificada por {{ c.certificada.por }} el {{ formatearFechaHora(c.certificada.en) }} para el vectorial {{ c.certificada.sha256.slice(0, 12) }}…)</span>
                             </li>
                         </ul>
+                        <!-- T7n-b (decisión 4): notas de modificación ("PLANO ANTERIOR"): el usuario certifica que la tabla vale para el plano vigente -->
+                        <div v-if="confirmar.sel.certificable" class="mb-4 bg-amber-950/40 border border-amber-700 rounded-lg p-3 text-sm text-amber-100" data-certificar>
+                            <p class="font-semibold">La hoja de esta tabla tiene notas de modificación:</p>
+                            <ul class="text-xs mt-1 list-disc ml-5 text-amber-200">
+                                <li v-for="n in confirmar.sel.comprobaciones.filter(c => c.comprobacion === 'sin_notas_de_modificacion').flatMap(c => c.detalle)" :key="n">{{ n }}</li>
+                            </ul>
+                            <label class="flex items-start gap-2 mt-2 text-xs">
+                                <input type="checkbox" v-model="confirmar.certifico" class="mt-0.5" data-certifico>
+                                <span>Revisé las notas y certifico que esta tabla vale para el plano vigente. <span class="text-amber-300/80">(queda auditado con tu usuario, la tabla y el sha256 del vectorial; si cambia el plano, la certificación se pierde)</span></span>
+                            </label>
+                            <button @click="certificarNotas" :disabled="!confirmar.certifico || confirmar.enviando" data-certificar-notas class="mt-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black text-xs font-bold px-3 py-1.5 rounded">{{ confirmar.enviando ? 'Certificando…' : 'Certificar que vale para el plano vigente' }}</button>
+                        </div>
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <p class="text-xs text-gray-400 mb-1">Recorte del plano vectorial (pág. {{ confirmar.sel.pagina }})</p>
@@ -670,7 +683,7 @@
                             <template v-if="confirmar.sel.confirmable">
                                 <label class="flex items-start gap-2 text-sm text-gray-200 bg-[#121214] border border-yellow-800/50 rounded-lg p-3">
                                     <input type="checkbox" v-model="confirmar.revisado" class="mt-1" data-revisado>
-                                    <span>Revisé los {{ confirmar.sel.campos.filter(x => x.estado !== 'confirmado').length }} valores pendientes contra el recorte del plano y los confirmo. <span class="text-xs text-gray-400">(queda auditado campo por campo con tu usuario y el lote)</span></span>
+                                    <span>Revisé los {{ confirmar.sel.campos.filter(x => x.estado !== 'confirmado').length }} valores pendientes contra el recorte del plano y los confirmo<span v-if="confirmar.sel.identidad_pendiente" data-identidad>, junto con la identidad de los elementos ({{ confirmar.sel.identidad_pendiente }} campos: ID, nivel, ejes, hoja y archivo)</span>. <span class="text-xs text-gray-400">(queda auditado campo por campo con tu usuario y el lote)</span></span>
                                 </label>
                                 <button @click="confirmarTabla" :disabled="!confirmar.revisado || confirmar.enviando" data-confirmar-tabla class="mt-3 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-5 py-2 rounded-lg">{{ confirmar.enviando ? 'Confirmando…' : 'Confirmar tabla completa' }}</button>
                             </template>
@@ -1213,7 +1226,7 @@
                 };
                 const abrirConfirmar = async (p) => {
                     confirmar.value = { proyecto_id: p.id, nombre: p.nombre, tablas: [], cargando: true, error: '', mensaje: '', extrayendo: false,
-                        sel: null, cargandoTabla: false, recorteUrl: '', errorRecorte: '', resaltado: null, revisado: false, enviando: false };
+                        sel: null, cargandoTabla: false, recorteUrl: '', errorRecorte: '', resaltado: null, revisado: false, certifico: false, enviando: false };
                     await cargarTablas();
                 };
                 const cerrarConfirmar = () => {
@@ -1222,7 +1235,7 @@
                 };
                 const abrirTabla = async (t) => {
                     const m = confirmar.value;
-                    m.cargandoTabla = true; m.revisado = false; m.resaltado = null; m.errorRecorte = '';
+                    m.cargandoTabla = true; m.revisado = false; m.certifico = false; m.resaltado = null; m.errorRecorte = '';
                     if (m.recorteUrl) URL.revokeObjectURL(m.recorteUrl);
                     m.recorteUrl = '';
                     try {
@@ -1257,6 +1270,25 @@
                         m.mensaje = `Lote ${d.lote}: ${d.confirmados} valores confirmados en ${d.elementos} elementos` +
                             (d.conflictos ? ` · ${d.conflictos} ya confirmados con otro valor (duda abierta en la Mesa)` : '') +
                             (d.dudas_cerradas.length ? ` · ${d.dudas_cerradas.length} dudas cerradas` : '') + '.';
+                    } catch (e) { m.error = e.message; } finally { m.enviando = false; }
+                    await cargarTablas();
+                    await cargarDudasAbiertas();
+                    const t = m.tablas.find(x => x.id === id);
+                    if (t) await abrirTabla(t);
+                };
+                // T7n-b (decisión 4): certificar que la tabla con notas de modificación vale para el plano vigente
+                const certificarNotas = async () => {
+                    const m = confirmar.value;
+                    if (!m || !m.sel || !m.certifico || m.enviando) return;
+                    m.enviando = true; m.error = ''; m.mensaje = '';
+                    const id = m.sel.id;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas/${id}/certificar-notas`, { method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ certifico: true, extraido_en: m.sel.extraido_en }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        m.mensaje = `Tabla ${d.tabla} certificada para el vectorial ${d.sha256.slice(0, 12)}…: queda en ${d.resultado}` +
+                            (d.dudas_cerradas.length ? ` · ${d.dudas_cerradas.length} duda cerrada` : '') + '.';
                     } catch (e) { m.error = e.message; } finally { m.enviando = false; }
                     await cargarTablas();
                     await cargarDudasAbiertas();
@@ -1372,7 +1404,7 @@
                     cambiarElemento, proponerVisor, usarPropuesta, rectActual, estadoRecuadro, detalleRecuadro, guardarRecuadro,
                     vistaPrevia, empezarDibujo, seguirDibujo, terminarDibujo,
                     confirmar, nombreTabla, esDudaPlano, dudasObra, abrirMesaObra, abrirConfirmar, cerrarConfirmar, abrirTabla,
-                    cajaResaltada, confirmarTabla, extraerPlano,
+                    cajaResaltada, confirmarTabla, certificarNotas, extraerPlano,
                     modalVisita, resultadoVisitas, abrirSubirVisita, abrirConectarDropbox, abrirMesaDeVisita, enviarVisita
                 };
             }

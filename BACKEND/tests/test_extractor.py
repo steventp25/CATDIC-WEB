@@ -159,17 +159,22 @@ def test_celdas_desalineadas_se_leen_y_cada_valor_lleva_su_fuente_y_queda_pendie
     assert d1["tipo_losa"] == "A" and d1["H"] == "0.25" and d1["DIR. Y"] == '3Ø1/2"' and d1["AS. ADIC."] == '2Ø1/2"'
     assert d2["tipo_losa"] == "C" and d2["h1"] == "0.20" and d2["AS. ADIC."] == '2Ø3/8"'
     assert d1["fc_kgcm2"] == "350"  # E-2 (equivalencia del usuario) cae en 'E1 @ E3'
-    # todos los campos pendientes, ninguno confirmado
+    # todos los campos pendientes salvo el L#→tipo que dio el usuario en "Datos de la obra" (T7n-b)
     for fila in (l1, l2):
         estado = json.loads(fila["estado_campos_json"])
-        assert estado and set(estado.values()) == {PENDIENTE_ESTADO}
-        assert set(json.loads(fila["pendientes_json"])) == set(estado)
+        assert estado and {k for k, v in estado.items() if v != PENDIENTE_ESTADO} == {"datos_diseno.tipo_losa"}
+        assert estado["datos_diseno.tipo_losa"] == CONFIRMADO
+        assert set(json.loads(fila["pendientes_json"])) == set(estado) - {"datos_diseno.tipo_losa"}
     # fuente: archivo, revisión, sha256, y por valor página, hoja y bbox
     f = json.loads(l1["fuente_json"])
     assert f["extractor"] == "T6n" and f["archivo"] == "vec.pdf" and f["revision"] == 1 and len(f["sha256"]) == 64
     h = f["valores"]["H"]
     assert h["pagina"] == 1 and h["hoja"] == "20" and h["columna"] == "H" and h["fila"] == "A" and len(h["bbox"]) == 4
-    assert f["valores"]["tipo_losa"] == {"origen": "usuario", "dato": "losa_tipo", "clave": "L1"}
+    tl = f["valores"]["tipo_losa"]  # T7n-b: el usuario, con referencia a la auditoría de "Datos de la obra"
+    assert {k: tl[k] for k in ("origen", "via", "dato", "clave", "por")} == {
+        "origen": "usuario", "via": "datos_de_la_obra", "dato": "losa_tipo", "clave": "L1", "por": "steven"}
+    aud = database.get_connection().execute("SELECT accion, detalle_json FROM auditoria WHERE id = ?", (tl["auditoria_id"],)).fetchone()
+    assert aud["accion"] == "GUARDAR_DATOS_OBRA" and json.loads(aud["detalle_json"])["tipo"] == "losa_tipo"
     assert f["valores"]["fc_kgcm2"]["tabla"] == "p1:fc_por_rango" and f["niveles_cubiertos"] == ["E-2"]
     # tablas en verde y sin dudas abiertas por el extractor
     assert _tabla(c, pid, "p1:acero_en_losa")["resultado"] == "verde"
@@ -241,7 +246,7 @@ def test_el_borde_entre_dos_rangos_toma_el_fc_del_rango_que_empieza_en_el(entorn
     assert fuente["fila"] == "E10 @ E16"
     assert fuente["borde_de_rango"]["E-10"]["fila_usada"] == "E10 @ E16"
     assert fuente["borde_de_rango"]["E-10"]["filas_que_ceden"] == ["E3 @ E10"]
-    assert set(json.loads(l1["estado_campos_json"]).values()) == {PENDIENTE_ESTADO}  # sigue sin confirmar (T7n)
+    assert json.loads(l1["estado_campos_json"])["datos_diseno.fc_kgcm2"] == PENDIENTE_ESTADO  # sin confirmar (T7n)
     assert not any("fc_por_rango" in d["campo"] for d in _dudas(pid))
     # un entrepiso interior de un rango no cambia: E-9 sigue en 350
     _, por_e = ex.comprobar_fc({"filas": t["filas"], "descartadas": []}, {})
