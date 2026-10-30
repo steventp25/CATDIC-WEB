@@ -181,6 +181,10 @@
                                             <button v-if="planosVigentes[p.id]" @click="abrirVisor(p)" :data-ver-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Ver plano</button>
                                             <button @click="abrirDatosObra(p)" :data-datos-obra="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Datos de la obra</button>
                                         </span>
+                                        <span class="flex gap-2 mt-1.5">
+                                            <button v-if="planosVigentes[p.id]" @click="abrirConfirmar(p)" :data-confirmar-plano="p.id" class="bg-[#29292e] hover:bg-[#323238] text-white px-2 py-1 rounded">Confirmar datos del plano</button>
+                                            <button v-if="dudasObra(p.id) > 0" @click="abrirMesaObra(p)" :data-dudas-obra="p.id" class="bg-orange-950 hover:bg-orange-900 border border-orange-600 text-orange-200 px-2 py-1 rounded">Dudas de la obra: {{ dudasObra(p.id) }}</button>
+                                        </span>
                                     </td>
                                     <td class="px-6 py-4 text-gray-400 text-xs">{{ p.observaciones }}</td>
                                 </tr>
@@ -272,14 +276,17 @@
             </div>
         </main>
 
-        <!-- MESA DE DUDAS (panel de la visita) -->
+        <!-- MESA DE DUDAS (panel de la visita, o de la obra: dudas sin visita, p. ej. las del plano T6n) -->
         <div v-if="mesa" class="fixed inset-0 z-40 flex justify-end bg-black/60" @click.self="cerrarMesa" data-mesa>
             <aside class="w-full max-w-2xl bg-[#1a1a1e] border-l border-[#29292e] h-full flex flex-col">
                 <div class="px-6 py-4 border-b border-[#29292e] flex justify-between items-start">
                     <div>
                         <h3 class="font-bold text-white"><i class="fa-solid fa-circle-question text-orange-400 mr-2"></i>Mesa de Dudas</h3>
-                        <p class="text-xs text-gray-400 mt-1">Visita {{ mesa.visita.numero }} · {{ mesa.visita.nombre_carpeta }}</p>
-                        <p class="text-xs mt-1"><span class="px-2 py-0.5 rounded border font-medium" :class="claseEstado(mesa.visita.estado)">{{ mesa.visita.estado }}</span></p>
+                        <template v-if="mesa.visita">
+                            <p class="text-xs text-gray-400 mt-1">Visita {{ mesa.visita.numero }} · {{ mesa.visita.nombre_carpeta }}</p>
+                            <p class="text-xs mt-1"><span class="px-2 py-0.5 rounded border font-medium" :class="claseEstado(mesa.visita.estado)">{{ mesa.visita.estado }}</span></p>
+                        </template>
+                        <p v-else class="text-xs text-gray-400 mt-1" data-mesa-obra>Obra {{ mesa.proyecto.nombre }} · dudas sin visita (plano y datos de la obra)</p>
                     </div>
                     <button @click="cerrarMesa" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
                 </div>
@@ -288,11 +295,11 @@
                         <i class="fa-solid fa-plug-circle-xmark text-red-400 mr-2"></i>{{ mesa.error }}
                     </div>
                     <div v-if="mesa.conflicto" class="bg-red-950 border border-red-700 text-red-200 rounded-lg px-4 py-3 text-sm" data-conflicto-mesa>
-                        <i class="fa-solid fa-triangle-exclamation text-red-400 mr-2"></i>{{ mesa.conflicto }} Se recargaron las dudas de la visita.
+                        <i class="fa-solid fa-triangle-exclamation text-red-400 mr-2"></i>{{ mesa.conflicto }} Se recargaron las dudas.
                     </div>
                     <p v-if="mesa.cargando" class="text-xs text-gray-400">Cargando dudas…</p>
-                    <p v-if="!mesa.cargando && !mesa.error && !mesa.dudas.length" class="text-xs text-gray-400">Esta visita no tiene dudas.</p>
-                    <p v-if="mesa.visita.estado === 'Procesada' && bloqueantesAbiertas(mesa.visita.id) > 0" class="text-xs text-orange-200 bg-orange-950 border border-orange-600 rounded px-3 py-2">
+                    <p v-if="!mesa.cargando && !mesa.error && !mesa.dudas.length" class="text-xs text-gray-400">{{ mesa.visita ? 'Esta visita no tiene dudas.' : 'Esta obra no tiene dudas abiertas sin visita.' }}</p>
+                    <p v-if="mesa.visita && mesa.visita.estado === 'Procesada' && bloqueantesAbiertas(mesa.visita.id) > 0" class="text-xs text-orange-200 bg-orange-950 border border-orange-600 rounded px-3 py-2">
                         <i class="fa-solid fa-triangle-exclamation mr-1"></i>Esta visita figura como Procesada pero tiene dudas bloqueantes abiertas.
                     </p>
 
@@ -317,9 +324,16 @@
                             <template v-if="d.categoria === 'HALLAZGO_INTERNO'">
                                 <button @click="responder(d, 'revisado')" :disabled="d._guardando" class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-60 text-sm text-yellow-300 px-3 py-1.5 rounded border border-yellow-500/30">Marcar revisado</button>
                             </template>
+                            <template v-else-if="d.campo_confirmable">
+                                <p class="text-xs text-gray-300" data-campo-confirmable>Campo del plano: <b class="text-white">{{ d.campo_confirmable.campo }}</b> de <b class="text-white">{{ d.campo_confirmable.id_elemento }}</b> ({{ d.campo_confirmable.nivel_rango }}) · propuesto: <b class="text-orange-300">{{ d.campo_confirmable.valor }}</b></p>
+                                <input v-model="d._entrada" type="text" placeholder="Valor leído en el plano" class="w-64 bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-sm text-white" data-valor-campo>
+                                <button @click="responder(d, d._entrada)" :disabled="d._guardando || !d._entrada" class="ml-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded" data-confirmar-campo>Confirmar valor</button>
+                                <p class="text-xs text-gray-400"><i class="fa-solid fa-circle-info mr-1"></i>El valor que escribes queda confirmado (fuente: tú) con auditoría. Se valida con las mismas reglas de la tabla.</p>
+                            </template>
                             <template v-else-if="d.id_elemento">
                                 <textarea v-model="d._entrada" rows="2" placeholder="Respuesta (texto libre)" class="w-full bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-sm text-white"></textarea>
                                 <button @click="responder(d, d._entrada)" :disabled="d._guardando || !d._entrada" class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-3 py-1.5 rounded">Guardar respuesta</button>
+                                <p v-if="esDudaPlano(d)" class="text-xs text-gray-400" data-aviso-plano><i class="fa-solid fa-circle-info mr-1"></i>Esta respuesta se guarda pero no confirma ningún dato. Si la causa sigue (en el plano o en «Datos de la obra»), la duda vuelve a abrirse al extraer.</p>
                                 <p v-if="esElementoVisita(d)" class="text-xs text-gray-400" data-aviso-etiqueta><i class="fa-solid fa-circle-info mr-1"></i>Esta respuesta se guarda; se aplicará al cruzar con los planos.</p>
                             </template>
                             <template v-else-if="d.campo_afectado === 'fecha_visita'">
@@ -340,7 +354,7 @@
                                     <label><input type="radio" value="no corresponde" v-model="d._entrada" class="mr-2">No corresponde</label>
                                 </div>
                                 <div v-if="d._entrada === 'corresponde'" class="text-sm">
-                                    <p v-if="!candidatosStp(mesa.visita).length" class="text-orange-300 text-xs">La visita no tiene STP candidatos guardados: no se puede citar ninguno.</p>
+                                    <p v-if="!mesa.visita || !candidatosStp(mesa.visita).length" class="text-orange-300 text-xs">La visita no tiene STP candidatos guardados: no se puede citar ninguno.</p>
                                     <template v-else>
                                         <p class="text-xs text-gray-400 mb-1">STP que corresponde a esta visita:</p>
                                         <select v-model="d._stp" class="w-full bg-[#121214] border border-[#29292e] rounded px-3 py-2 text-xs text-white">
@@ -508,6 +522,101 @@
         </div>
     </div>
 
+
+    <!-- MODAL: CONFIRMAR DATOS DEL PLANO (Etapa 2 · T7n): confirmación por lote de una tabla en verde, con el recorte al lado -->
+    <div v-if="confirmar" class="fixed inset-0 bg-black/80 z-30 flex flex-col p-4" data-confirmar>
+        <div class="bg-[#1a1a1e] border border-[#29292e] rounded-xl flex flex-col flex-1 min-h-0">
+            <div class="px-5 py-3 border-b border-[#29292e] flex flex-wrap items-center gap-3 text-sm">
+                <h3 class="font-bold text-white mr-2"><i class="fa-solid fa-table-list mr-2 text-yellow-400"></i>Confirmar datos del plano · {{ confirmar.nombre }}</h3>
+                <button @click="extraerPlano" :disabled="confirmar.extrayendo" data-extraer class="bg-[#29292e] hover:bg-[#323238] disabled:opacity-50 text-white px-3 py-1 rounded">{{ confirmar.extrayendo ? 'Extrayendo…' : 'Extraer del plano vigente' }}</button>
+                <button @click="abrirMesaObra({ id: confirmar.proyecto_id, nombre: confirmar.nombre })" class="bg-[#29292e] hover:bg-[#323238] text-white px-3 py-1 rounded">Mesa de Dudas de la obra</button>
+                <span class="flex-1"></span>
+                <button @click="cerrarConfirmar" class="text-gray-400 hover:text-white" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p v-if="confirmar.error" class="mx-5 mt-3 bg-red-950 border border-red-700 text-red-200 rounded px-3 py-2 text-xs" data-confirmar-error>{{ confirmar.error }}</p>
+            <p v-if="confirmar.mensaje" class="mx-5 mt-3 bg-green-950 border border-green-700 text-green-200 rounded px-3 py-2 text-xs" data-confirmar-mensaje>{{ confirmar.mensaje }}</p>
+            <div class="flex flex-1 min-h-0">
+                <!-- Tablas extraídas -->
+                <div class="w-80 border-r border-[#29292e] overflow-y-auto p-3 space-y-2 text-xs">
+                    <p v-if="confirmar.cargando" class="text-gray-400">Cargando tablas…</p>
+                    <p v-else-if="!confirmar.tablas.length" class="text-gray-400">Aún no hay tablas extraídas del plano vigente. Pulsa «Extraer del plano vigente».</p>
+                    <button v-for="t in confirmar.tablas" :key="t.id" @click="abrirTabla(t)" :data-tabla="t.clave"
+                            class="w-full text-left rounded-lg border p-2.5 hover:bg-[#222227]"
+                            :class="[confirmar.sel && confirmar.sel.id === t.id ? 'border-yellow-500' : 'border-[#29292e]', t.vigente ? '' : 'opacity-50']">
+                        <span class="flex items-center justify-between gap-2">
+                            <b class="text-white">{{ nombreTabla(t.tabla) }}</b>
+                            <span class="px-1.5 py-0.5 rounded border font-semibold" :class="t.resultado === 'verde' ? 'bg-green-950 text-green-300 border-green-700' : 'bg-red-950 text-red-300 border-red-700'">{{ t.resultado }}</span>
+                        </span>
+                        <span class="block text-gray-400 mt-1">pág. {{ t.pagina }} · hoja {{ t.hoja }} · {{ t.nivel_rango }}</span>
+                        <span v-if="t.resultado === 'rojo'" class="block text-red-300 mt-1">Falla: {{ t.comprobaciones.filter(c => !c.ok).map(c => c.comprobacion).join(', ') }}</span>
+                        <span v-if="!t.vigente" class="block text-orange-300 mt-1">No vigente: {{ t.motivos_no_vigente[0] }}</span>
+                    </button>
+                </div>
+                <!-- Tabla abierta: recorte del plano + filas propuestas -->
+                <div class="flex-1 overflow-y-auto p-4 text-sm">
+                    <p v-if="!confirmar.sel && !confirmar.cargandoTabla" class="text-gray-400 text-xs">Elige una tabla para ver sus filas propuestas junto al recorte del plano.</p>
+                    <p v-if="confirmar.cargandoTabla" class="text-gray-400 text-xs">Cargando la tabla…</p>
+                    <template v-if="confirmar.sel && !confirmar.cargandoTabla">
+                        <div class="flex flex-wrap items-center gap-2 mb-3">
+                            <h4 class="font-bold text-white">{{ nombreTabla(confirmar.sel.tabla) }}</h4>
+                            <span class="text-xs text-gray-400">{{ confirmar.sel.clave }} · pág. {{ confirmar.sel.pagina }} · hoja {{ confirmar.sel.hoja }} · nivel {{ confirmar.sel.nivel_rango }} · extraída {{ formatearFechaHora(confirmar.sel.extraido_en) }}</span>
+                            <span class="text-xs px-2 py-0.5 rounded border font-semibold" :class="confirmar.sel.resultado === 'verde' ? 'bg-green-950 text-green-300 border-green-700' : 'bg-red-950 text-red-300 border-red-700'" data-resultado>{{ confirmar.sel.resultado }}</span>
+                        </div>
+                        <ul class="text-xs space-y-1 mb-4" data-comprobaciones>
+                            <li v-for="c in confirmar.sel.comprobaciones" :key="c.comprobacion" :class="c.ok ? 'text-gray-400' : 'text-red-300'">
+                                <i class="fa-solid mr-1" :class="c.ok ? 'fa-check text-green-400' : 'fa-xmark'"></i>{{ c.comprobacion }}<span v-if="!c.ok">: {{ c.detalle.join('; ') }}</span>
+                            </li>
+                        </ul>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <p class="text-xs text-gray-400 mb-1">Recorte del plano vectorial (pág. {{ confirmar.sel.pagina }})</p>
+                                <div v-if="confirmar.recorteUrl" class="relative border border-[#29292e] rounded bg-white" data-recorte>
+                                    <img :src="confirmar.recorteUrl" class="w-full block" data-recorte-img>
+                                    <div v-if="cajaResaltada" class="absolute pointer-events-none" data-resaltado
+                                         :style="{ left: cajaResaltada.left, top: cajaResaltada.top, width: cajaResaltada.width, height: cajaResaltada.height, border: '2px solid #dc0000', background: 'rgba(220,0,0,0.12)' }"></div>
+                                </div>
+                                <p v-else class="text-xs text-orange-300">{{ confirmar.errorRecorte || 'Sin recorte: la tabla no tiene celdas con posición.' }}</p>
+                                <p class="text-xs text-gray-500 mt-1">Pasa el ratón sobre un valor para ver su celda en el recorte.</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-gray-400 mb-1">Valores propuestos que vienen de esta tabla ({{ confirmar.sel.campos.length }})</p>
+                                <table class="w-full text-xs" data-campos>
+                                    <thead class="text-gray-400 border-b border-[#29292e]"><tr><th class="text-left py-1">Elemento</th><th class="text-left">Campo</th><th class="text-left">Valor</th><th class="text-left">Estado</th></tr></thead>
+                                    <tbody>
+                                        <tr v-for="x in confirmar.sel.campos" :key="x.uid + x.campo" @mouseenter="confirmar.resaltado = x.fuente.bbox" @mouseleave="confirmar.resaltado = null"
+                                            class="border-b border-[#29292e]/50 hover:bg-[#222227]" :data-campo="x.id_elemento + '|' + x.campo">
+                                            <td class="py-1 text-white">{{ x.id_elemento }} <span class="text-gray-500">{{ x.nivel_rango }}</span></td>
+                                            <td class="text-gray-300">{{ x.campo }} <span class="text-gray-500">(fila {{ x.fuente.fila }})</span></td>
+                                            <td :class="x.valor === x.valor_tabla ? 'text-white' : 'text-red-300'">{{ x.valor }}<span v-if="x.valor !== x.valor_tabla" class="block">tabla: {{ x.valor_tabla || '—' }}</span></td>
+                                            <td><span class="px-1.5 py-0.5 rounded border" :class="x.estado === 'confirmado' ? 'bg-green-950 text-green-300 border-green-700' : 'bg-orange-950 text-orange-300 border-orange-600'">{{ x.estado === 'confirmado' ? 'confirmado' : 'pendiente' }}</span></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <p v-if="!confirmar.sel.campos.length" class="text-xs text-gray-400 mt-2">Ningún elemento toma valores de esta tabla.</p>
+                            </div>
+                        </div>
+                        <!-- Confirmación por lote (solo en verde y de la extracción vigente) -->
+                        <div class="mt-5 border-t border-[#29292e] pt-4">
+                            <template v-if="confirmar.sel.confirmable">
+                                <label class="flex items-start gap-2 text-sm text-gray-200 bg-[#121214] border border-yellow-800/50 rounded-lg p-3">
+                                    <input type="checkbox" v-model="confirmar.revisado" class="mt-1" data-revisado>
+                                    <span>Revisé los {{ confirmar.sel.campos.filter(x => x.estado !== 'confirmado').length }} valores pendientes contra el recorte del plano y los confirmo. <span class="text-xs text-gray-400">(queda auditado campo por campo con tu usuario y el lote)</span></span>
+                                </label>
+                                <button @click="confirmarTabla" :disabled="!confirmar.revisado || confirmar.enviando" data-confirmar-tabla class="mt-3 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-sm font-bold px-5 py-2 rounded-lg">{{ confirmar.enviando ? 'Confirmando…' : 'Confirmar tabla completa' }}</button>
+                            </template>
+                            <div v-else-if="confirmar.sel.resultado === 'rojo'" class="bg-red-950/40 border border-red-700 rounded-lg p-3 text-sm text-red-200" data-tabla-roja>
+                                <p class="font-semibold">Esta tabla está en rojo: no se confirma por lote.</p>
+                                <p class="text-xs mt-1">Falló: <b>{{ confirmar.sel.comprobaciones.filter(c => !c.ok).map(c => c.comprobacion).join(', ') }}</b>. Los campos dudosos se resuelven uno por uno en la Mesa de Dudas; los datos que el plano no trae (E-n ↔ nivel, tipo de losa, plantas repetidas) van en «Datos de la obra», y después se vuelve a extraer.</p>
+                                <button @click="abrirMesaObra({ id: confirmar.proyecto_id, nombre: confirmar.nombre })" data-ir-mesa class="mt-2 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold px-3 py-1.5 rounded">Ir a la Mesa de Dudas</button>
+                            </div>
+                            <p v-else class="text-xs text-orange-300" data-no-confirmable>No se puede confirmar: {{ confirmar.sel.motivos_no_confirmable.join('; ') }}.</p>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+
     </div>
 
     <script>
@@ -534,6 +643,7 @@
                 const modalDatos = ref(null);
                 const visor = ref(null);
                 const lienzoVisor = ref(null);
+                const confirmar = ref(null);
 
                 // --- Utilidades de presentación (no calculan reglas de ingeniería) ---
                 const esPendiente = (v) => v === null || v === undefined || v === '' || String(v).trim().toLowerCase() === PENDIENTE;
@@ -697,7 +807,9 @@
                     if (!mesa.value) return;
                     mesa.value.cargando = true;
                     try {
-                        const res = await fetch(`${API}/api/dudas?visita_id=${encodeURIComponent(mesa.value.visita.id)}`);
+                        const url = mesa.value.visita ? `${API}/api/dudas?visita_id=${encodeURIComponent(mesa.value.visita.id)}`
+                            : `${API}/api/dudas?sin_visita=true&proyecto_id=${encodeURIComponent(mesa.value.proyecto.id)}`;
+                        const res = await fetch(url);
                         if (!res.ok) throw new Error(await leerError(res));
                         const dudas = await res.json();
                         mesa.value.dudas = dudas.map(d => ({ ...d, _entrada: d.campo_afectado === 'estado' ? '' : '', _stp: 0, _error: '', _guardando: false }))
@@ -733,7 +845,7 @@
                         }
                         if (!res.ok) throw Object.assign(new Error(await leerError(res)), { status: res.status });  // 404 / 409 / 422: no se cierra nada
                         const r = await res.json();
-                        const visitaId = mesa.value.visita.id;
+                        const visitaId = mesa.value.visita && mesa.value.visita.id;
                         await cargarDatos();
                         const actualizada = visitas.value.find(v => v.id === visitaId);
                         if (actualizada) mesa.value.visita = actualizada;
@@ -743,7 +855,7 @@
                     } catch (e) {
                         if (e.status === 409 && mesa.value) {
                             // Otra persona (o otra pestaña) ya la respondió: se recargan las dudas y se avisa
-                            const visitaId = mesa.value.visita.id;
+                            const visitaId = mesa.value.visita && mesa.value.visita.id;
                             mesa.value.conflicto = e.message;
                             await cargarDatos();
                             const actualizada = visitas.value.find(v => v.id === visitaId);
@@ -1010,6 +1122,93 @@
                     if (b && (b.rect[2] - b.rect[0] < 5 || b.rect[3] - b.rect[1] < 5)) v.borrador[v.tipo] = null;   // un clic suelto no es un recuadro
                 };
 
+
+                // --- Etapa 2 · T7n: confirmar los datos extraídos del plano (por lote) y Mesa de Dudas de la obra ---
+                const NOMBRES_TABLA = { acero_en_losa: 'Acero en losa', zapata_muro_lindero: 'Zapata de muro lindero', fc_por_rango: "f'c por rango", losa_aligerada: 'Losa aligerada' };
+                const nombreTabla = (t) => NOMBRES_TABLA[t] || t;
+                const esDudaPlano = (d) => /^T[67]n:/.test(String(d.campo_afectado || ''));
+                const dudasObra = (proyectoId) => dudasAbiertasLista.value.filter(d => d.proyecto_id === proyectoId && !d.visita_id).length;
+                const abrirMesaObra = async (p) => {
+                    mesa.value = { visita: null, proyecto: { id: p.id, nombre: p.nombre }, dudas: [], cargando: true, error: '', aviso: '', conflicto: '' };
+                    await cargarDudasVisita();
+                };
+                const cargarTablas = async () => {
+                    const m = confirmar.value;
+                    m.cargando = true;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas`);
+                        if (!r.ok) throw new Error(await leerError(r));
+                        m.tablas = (await r.json()).tablas;
+                    } catch (e) { m.error = e.message; } finally { m.cargando = false; }
+                };
+                const abrirConfirmar = async (p) => {
+                    confirmar.value = { proyecto_id: p.id, nombre: p.nombre, tablas: [], cargando: true, error: '', mensaje: '', extrayendo: false,
+                        sel: null, cargandoTabla: false, recorteUrl: '', errorRecorte: '', resaltado: null, revisado: false, enviando: false };
+                    await cargarTablas();
+                };
+                const cerrarConfirmar = () => {
+                    if (confirmar.value && confirmar.value.recorteUrl) URL.revokeObjectURL(confirmar.value.recorteUrl);
+                    confirmar.value = null;
+                };
+                const abrirTabla = async (t) => {
+                    const m = confirmar.value;
+                    m.cargandoTabla = true; m.revisado = false; m.resaltado = null; m.errorRecorte = '';
+                    if (m.recorteUrl) URL.revokeObjectURL(m.recorteUrl);
+                    m.recorteUrl = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas/${t.id}`);
+                        if (!r.ok) throw new Error(await leerError(r));
+                        m.sel = await r.json();
+                        if (m.sel.recorte) {
+                            // Mismo recorte nítido que DETALLE (vista previa del visor de T5n), con el bbox de las celdas de la tabla
+                            const rr = await fetch(`${API}/api/proyectos/${m.proyecto_id}/visor/vista-previa`, { method: 'POST',
+                                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tipo: 'detalle', pagina: m.sel.pagina, rect: m.sel.recorte }) });
+                            if (rr.ok) m.recorteUrl = URL.createObjectURL(await rr.blob()); else m.errorRecorte = await leerError(rr);
+                        }
+                    } catch (e) { m.error = e.message; m.sel = null; } finally { m.cargandoTabla = false; }
+                };
+                // Celda resaltada sobre el recorte, en % del recorte (el PNG conserva la proporción del rect)
+                const cajaResaltada = computed(() => {
+                    const m = confirmar.value;
+                    if (!m || !m.sel || !m.sel.recorte || !m.resaltado) return null;
+                    const [x0, y0, x1, y1] = m.sel.recorte, b = m.resaltado, w = x1 - x0, h = y1 - y0;
+                    return { left: `${(b[0] - x0) / w * 100}%`, top: `${(b[1] - y0) / h * 100}%`, width: `${(b[2] - b[0]) / w * 100}%`, height: `${(b[3] - b[1]) / h * 100}%` };
+                });
+                const confirmarTabla = async () => {
+                    const m = confirmar.value;
+                    if (!m || !m.sel || !m.revisado || m.enviando) return;
+                    m.enviando = true; m.error = ''; m.mensaje = '';
+                    const id = m.sel.id;
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/tablas-extraidas/${id}/confirmar`, { method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmo: true, extraido_en: m.sel.extraido_en }) });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        m.mensaje = `Lote ${d.lote}: ${d.confirmados} valores confirmados en ${d.elementos} elementos` +
+                            (d.conflictos ? ` · ${d.conflictos} ya confirmados con otro valor (duda abierta en la Mesa)` : '') +
+                            (d.dudas_cerradas.length ? ` · ${d.dudas_cerradas.length} dudas cerradas` : '') + '.';
+                    } catch (e) { m.error = e.message; } finally { m.enviando = false; }
+                    await cargarTablas();
+                    await cargarDudasAbiertas();
+                    const t = m.tablas.find(x => x.id === id);
+                    if (t) await abrirTabla(t);
+                };
+                const extraerPlano = async () => {
+                    const m = confirmar.value;
+                    m.extrayendo = true; m.error = ''; m.mensaje = '';
+                    try {
+                        const r = await fetch(`${API}/api/proyectos/${m.proyecto_id}/extraer-diseno`, { method: 'POST' });
+                        if (!r.ok) throw new Error(await leerError(r));
+                        const d = await r.json();
+                        const verdes = d.tablas.filter(t => t.resultado === 'verde').length;
+                        m.mensaje = `Extracción rev. ${d.revision}: ${d.tablas.length} tablas (${verdes} en verde), ${d.elementos.propuestos} elementos propuestos, ` +
+                            `${d.dudas_creadas} dudas nuevas, ${d.dudas_cerradas} cerradas. Todo queda pendiente hasta que lo confirmes.`;
+                        m.sel = null;
+                    } catch (e) { m.error = e.message; } finally { m.extrayendo = false; }
+                    await cargarTablas();
+                    await cargarDudasAbiertas();
+                };
+
                 const contarOTs = (estado) => ordenes.value.filter(o => o.estado === estado).length;
                 const filtrarOTs = (estado) => ordenes.value.filter(o => o.estado === estado);
 
@@ -1028,7 +1227,9 @@
                     abrirNuevaObra, abrirCambiarPlano, cerrarModalObra, enviarObra, abrirDatosObra, guardarDatos,
                     visor, lienzoVisor, tiposRecuadro, elementoVisor, cajasVisibles, ptAPx, abrirVisor, cargarHoja, zoomVisor, ajustarVisor,
                     cambiarElemento, proponerVisor, usarPropuesta, rectActual, estadoRecuadro, detalleRecuadro, guardarRecuadro,
-                    vistaPrevia, empezarDibujo, seguirDibujo, terminarDibujo
+                    vistaPrevia, empezarDibujo, seguirDibujo, terminarDibujo,
+                    confirmar, nombreTabla, esDudaPlano, dudasObra, abrirMesaObra, abrirConfirmar, cerrarConfirmar, abrirTabla,
+                    cajaResaltada, confirmarTabla, extraerPlano
                 };
             }
         }).mount('#app');
