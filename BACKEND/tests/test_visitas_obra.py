@@ -363,3 +363,23 @@ def test_validar_carpeta_real_de_terra(monkeypatch):
         pytest.skip(f"Dropbox real no disponible en esta máquina: {ruta}")
     rutas = visitas_obra.validar_carpeta_visitas(str(ruta))
     assert rutas["proyecto"] == config.obtener_dropbox_raiz().joinpath(*TERRA_VISITAS_REAL[:3]).resolve()
+
+
+def test_conectar_dropbox_visita_con_dos_pdf_no_queda_sin_leer_en_silencio(entorno):  # SINTÉTICO
+    """Como las #7, #9 y #10 reales de Terra: 2 PDF en la carpeta -> el lector no elige; duda y Con dudas."""
+    c, tmp = entorno
+    pid = _obra(c)
+    obra = tmp / "dropbox" / "SUPERVISION" / "EN CURSO" / "OBRA DOS PDF"
+    v = obra / "LEVANTAMIENTO" / "VISITA A OBRA" / "9 - LOSA S-6 PARCIAL 30-09-2026"
+    v.mkdir(parents=True)
+    (v / "parte 1.pdf").write_bytes(_pdf_visita(("C1 A4",)))
+    (v / "parte 2.pdf").write_bytes(_pdf_visita(("C2 A4",)))
+    antes = _listado(tmp / "dropbox")
+    r = c.post(f"/api/proyectos/{pid}/dropbox", json={"carpeta_visitas": str(v.parent)})
+    assert r.status_code == 200, r.text
+    nueva = r.json()["visitas_nuevas"][0]
+    assert not nueva["lector"]["ok"] and "2 PDF" in nueva["lector"]["error"]
+    assert nueva["estado"] == "Con dudas"
+    assert [d["campo_afectado"] for d in nueva["dudas"]] == ["lector_visita"]
+    assert _bd("SELECT COUNT(*) AS n FROM auditoria WHERE accion = 'LECTOR_NO_LEYO_VISITA'")[0]["n"] == 1
+    assert _listado(tmp / "dropbox") == antes

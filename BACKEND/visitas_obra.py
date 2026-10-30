@@ -109,13 +109,36 @@ def _dudas_abiertas(visita_ids: List[str]) -> Dict[str, List[Dict]]:
     return resultado
 
 
-def _correr_lector(visita_id: str, respaldar: bool) -> Dict:
-    """Lector T3 sobre una visita. Nunca lanza: lo que falle queda en el resultado (y, si es el PDF, en su duda)."""
+def _correr_lector(visita_id: str, respaldar: bool, usuario: str) -> Dict:
+    """
+    Lector T3 sobre una visita. Nunca lanza: lo que falle queda en el resultado y en una DUDA_BLOQUEANTE
+    `lector_visita` de la visita (el lector ya la deja si el PDF no tiene forma de visita; si falló antes, p. ej.
+    porque la carpeta tiene 2 PDF, la deja esta función), y la visita abierta pasa a Con dudas: no queda sin leer
+    en silencio.
+    """
     try:
-        r = lector_visita.cargar_visita(visita_id, respaldar=respaldar)
+        r = lector_visita.cargar_visita(visita_id, respaldar=respaldar, usuario=usuario)
         return {"ok": True, "grupos": r["grupos"], "paginas": r["paginas"], "dudas_nuevas": r["dudas_nuevas"]}
-    except Exception as exc:  # noqa: BLE001 — el lector ya dejó su duda si el PDF no tiene forma de visita
-        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+    conn = get_connection()
+    conn.isolation_level = None
+    try:
+        visita = conn.execute("SELECT * FROM visitas WHERE id = ?", (visita_id,)).fetchone()
+        if visita is not None:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if lector_visita._insertar_duda(conn, visita, "", lector_visita.CAMPO_PDF_VISITA,
+                                                f"El lector de visitas no pudo leer la visita: {error}"):
+                    lector_visita._marcar_con_dudas(conn, visita)
+                    _auditar(conn, "LECTOR_NO_LEYO_VISITA", visita_id, {"motivo": error}, usuario)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+    finally:
+        conn.close()
+    return {"ok": False, "error": error}
 
 
 def _estado_visitas(visita_ids: List[str]) -> Dict[str, Dict]:
@@ -376,7 +399,7 @@ def subir_visita(proyecto_id: str, pdf, numero, elementos: str, nivel: str, fech
         except OSError:
             pass
 
-    lector = _correr_lector(visita_id, respaldar=True) if leer else None
+    lector = _correr_lector(visita_id, True, usuario) if leer else None
     fila = _estado_visitas([visita_id])[visita_id]
     return {"visita": {**fila, "ruta_carpeta": str(final), "archivos": archivos},
             "lector": lector, "dudas": _dudas_abiertas([visita_id])[visita_id]}
@@ -479,7 +502,7 @@ def conectar_dropbox(proyecto_id: str, carpeta_visitas: str, usuario: Optional[s
             finally:
                 conn.close()
         for v in nuevas:
-            lector[v] = (_correr_lector(v, respaldar=False) if v in a_leer else
+            lector[v] = (_correr_lector(v, False, usuario) if v in a_leer else
                          {"ok": False, "omitida": True,
                           "error": f"la visita quedó {estados[v]['estado']}: el lector no la abre"})
     estados = _estado_visitas(nuevas)
