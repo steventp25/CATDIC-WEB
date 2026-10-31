@@ -66,7 +66,19 @@ SUBRUTA_FORMULARIOS = Path("FORMULARIOS")
 
 # Campos de dudas que abre el lector (T3) y el procesador para UN elemento (sufijo pNNN = página que lo abre).
 PREFIJO_LECTOR = "elemento_visita:"
-PREFIJOS_ELEMENTO = (PREFIJO_LECTOR, "cruce:", "diseno:", "obra:", "excluido:", "generacion:p")
+_RE_CAMPO_ELEMENTO = re.compile(r"^(elemento_visita|cruce|diseno|obra|excluido|generacion):(p\d{3})(?::|$)")
+# Dudas de la visita que abre el propio procesador: se recalculan en cada corrida (se cierran si la causa ya no está).
+PREFIJOS_PROPIOS_VISITA = ("procesador:", "proyecto:", "generacion:", "auditor:")
+
+
+def campo_de_elemento(campo: str) -> Optional[Tuple[str, str]]:
+    """('cruce', 'p007') para una duda de un elemento; None para una duda de la visita."""
+    m = _RE_CAMPO_ELEMENTO.match(campo or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+def es_propia_de_visita(campo: str) -> bool:
+    return campo_de_elemento(campo) is None and (campo or "").startswith(PREFIJOS_PROPIOS_VISITA)
 
 # De qué dato de diseño (datos_diseno_json) sale cada fila del STP-MIVED. PENDIENTE DE STEVEN: hoy NO hay ninguna
 # correspondencia aprobada (p. ej. si "DIR. X" de la tabla de acero en losa es la fila h "Barras Top X-X" o la i
@@ -358,6 +370,7 @@ class ProcesoVisita:
     def __init__(self, trabajo_id: str, visita_id: str, usuario: str):
         self.trabajo_id, self.visita_id, self.usuario = trabajo_id, visita_id, usuario
         self.dudas: List[int] = []          # dudas (nuevas o ya abiertas) que esta corrida señaló
+        self.campos: set = set()            # campos de esas dudas: lo que no se vuelva a señalar se cierra solo
         self.pdf: List[Dict] = []
         self.avisos: List[str] = []
 
@@ -386,6 +399,7 @@ class ProcesoVisita:
                                                                "pregunta": texto, "trabajo": self.trabajo_id}, self.usuario)
             return cur.lastrowid, True
         duda_id, nueva = _con_conexion(abrir)
+        self.campos.add(campo)
         self.dudas.append(duda_id)
         pregunta = _con_conexion(lambda c: c.execute("SELECT descripcion_pregunta FROM dudas_y_hallazgos WHERE id = ?",
                                                      (duda_id,)).fetchone()[0])
@@ -393,15 +407,23 @@ class ProcesoVisita:
                                           "campo": campo, "pregunta": pregunta, **(refs or {})})
         return duda_id
 
-    def cerrar_propias(self, prefijo_pagina: str, vigentes: set):
-        """Cierra las dudas propias de un elemento (cruce/diseno/obra/excluido/generacion) cuya causa ya no existe."""
+    def cerrar_propias(self, pagina: Optional[str], vigentes: set, clases: Tuple[str, ...]):
+        """
+        Cierra las dudas que abrió el procesador y cuya causa ya no existe en esta corrida. pagina='pNNN' y clases
+        ('cruce', 'diseno') o ('obra', 'excluido', 'generacion') para un elemento; pagina=None para las de la visita.
+        Nunca cierra una duda del lector, del sync ni de la Mesa.
+        """
         def cerrar(conn):
             cerradas = []
             for d in self._dudas_abiertas(conn):
                 campo = d["campo_afectado"]
-                if campo.startswith(PREFIJO_LECTOR) or not campo.startswith(PREFIJOS_ELEMENTO):
+                if campo in vigentes:
                     continue
-                if campo.split(":")[1] != prefijo_pagina or campo in vigentes:
+                el = campo_de_elemento(campo)
+                if pagina is None:
+                    if not es_propia_de_visita(campo):
+                        continue
+                elif el is None or el[1] != pagina or el[0] not in clases:
                     continue
                 conn.execute("UPDATE dudas_y_hallazgos SET resuelta = 1, respuesta_usuario = ?, resuelto_en = ? WHERE id = ?",
                              (RESPUESTA_CIERRE, _ahora(), d["id"]))
@@ -493,6 +515,10 @@ class ProcesoVisita:
                                                "texto": f"Visita leída: {r['grupos']} elementos y {r['paginas']} fotos."})
         except ValueError as exc:  # el lector ya dejó su duda `lector_visita`
             self.duda(lector_visita.CAMPO_PDF_VISITA, "(visita)", str(exc), {"visita_pdf": {"ruta": self.pdf_visita}})
+        except (OSError, pymupdf.FileNotFoundError, pymupdf.FileDataError) as exc:  # PDF ausente o ilegible
+            self.duda(lector_visita.CAMPO_PDF_VISITA, "(visita)",
+                      f"No se pudo abrir el PDF de la visita '{Path(self.pdf_visita).name}': {exc}",
+                      {"visita_pdf": {"ruta": self.pdf_visita}})
 
     # --- 2. Cruce ---
     def _contexto(self, visita) -> Dict:
@@ -550,7 +576,7 @@ class ProcesoVisita:
             esperando.append(self.duda(campo, etiqueta, texto, self._refs(ev, candidato)))
 
         def fin(resultado):
-            self.cerrar_propias(pagina, vigentes)
+            self.cerrar_propias(pagina, vigentes, ("cruce", "diseno"))
             if resultado["estado"] == "espera":
                 resultado["esperando"] = esperando
             return resultado
@@ -669,7 +695,11 @@ class ProcesoVisita:
                                f"(p. ej. si 'DIR. X' es la fila de barras arriba o abajo): decisión pendiente de Steven "
                                f"({PENDIENTE})."))
             else:
+                # Capa 2 (contrato de medidas_acero_campo_json): {letra: metros medidos sobre el acero, "obra": {letra:
+                # texto de la columna OBRA}}. Hoy ningún módulo lo llena (la captura de OBRA es una decisión pendiente).
                 medidas_obra = _dict(ev["medidas_acero_campo_json"])
+                obra_txt = medidas_obra.get("obra") if isinstance(medidas_obra.get("obra"), dict) else {}
+                ficha["obra"] = {k: str(v) for k, v in obra_txt.items() if not _vacio(v)}
                 for letra, campo in mapeo.get("filas", {}).items():
                     if not _vacio(datos.get(campo)):
                         ficha["plano"][letra] = str(datos[campo])
@@ -680,7 +710,8 @@ class ProcesoVisita:
                         continue  # el generador pide la dimensión que falte con su duda
                     medida = medidas_obra.get(letra)
                     ficha["medidas"][letra] = {"valor_plano_m": valor,
-                                               "medida_acero_campo_m": medida if isinstance(medida, (int, float)) else None}
+                                               "medida_acero_campo_m": medida if isinstance(medida, (int, float))
+                                                and not isinstance(medida, bool) else None}
                 if mapeo.get("barras"):
                     barras = datos.get(mapeo["barras"])
                     if isinstance(barras, list) and all(isinstance(b, list) and len(b) == 2 for b in barras):
@@ -773,7 +804,8 @@ class ProcesoVisita:
             bloqueos.append("cabecera del proyecto incompleta")
         # Dudas de la visita (no de un elemento) que siguen abiertas: fecha, clase, estado, archivos, lector…
         abiertas = _con_conexion(self._dudas_abiertas)
-        propias = [d for d in abiertas if not d["campo_afectado"].startswith(PREFIJOS_ELEMENTO)]
+        propias = [d for d in abiertas if campo_de_elemento(d["campo_afectado"]) is None
+                   and not es_propia_de_visita(d["campo_afectado"])]
         if propias:
             bloqueos.append(f"{len(propias)} dudas de la visita abiertas ({', '.join(sorted({d['campo_afectado'] for d in propias}))})")
         return bloqueos
@@ -843,6 +875,8 @@ class ProcesoVisita:
                                                         f"las celdas quedan vacías en el STP ({PENDIENTE}).")
             for e in r["errores"]:
                 self.duda("generacion:STP-MIVED", "(visita)", f"STP-MIVED: {e}")
+            for f in fichas:  # las dudas de OBRA / excluido / generación que el STP ya no da, se cierran
+                self.cerrar_propias(f"p{f['orden_en_log']:03d}", self.campos, ("obra", "excluido", "generacion"))
             if r["ok"]:
                 resultado["archivos"].append({"formato": FORMATO_STP, "ruta": str(r["ruta"])})
             if not r["ok"] or r["dudas"] or r["errores"] or r.get("excluidos"):
@@ -946,6 +980,7 @@ class ProcesoVisita:
 
     def _cerrar(self, visita, resultados: Dict[str, Dict], generado: Dict) -> Dict:
         formatos = [f for f in _lista(visita["formatos_solicitados"]) if f != FORMATO_CATDIC]
+        self.cerrar_propias(None, self.campos, ())  # dudas propias de la visita de corridas anteriores ya sin causa
         abiertas = _con_conexion(self._dudas_abiertas)
         limpio = (bool(generado) and generado["limpio"] and not abiertas
                   and all(r["estado"] in ("listo", "anterior") for r in resultados.values()))
