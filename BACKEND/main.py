@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import procesador_cola
 from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
 from mesa_dudas import router as router_mesa_dudas
 from obras import planos_vigentes, router as router_obras
@@ -37,6 +38,7 @@ app.add_middleware(
 def startup_event():
     inicializar_bd()
     sembrar_datos_iniciales_catdic()
+    procesador_cola.marcar_huerfanos()  # Etapa 3 · T10a: trabajos que quedaron corriendo si el servidor se cerró
 
 
 # --- MODELOS PYDANTIC ---
@@ -138,15 +140,47 @@ def sincronizar_dropbox(proyecto_id: Optional[str] = None):
         raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
 
 
-MENSAJE_PROCESAR_COLA_DESACTIVADO = (
-    "Procesar Cola se habilita en la Etapa 3 (generadores). No se cambió ninguna visita."
-)
+# --- Etapa 3 · T10a: procesador de la cola (trabajo en segundo plano con eventos para la pantalla en vivo) ---
+def _lanzar(visita_ids, tipo: str):
+    try:
+        return procesador_cola.lanzar_trabajo(visita_ids, tipo)
+    except procesador_cola.TrabajoEnCurso as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except procesador_cola.VisitaNoProcesable as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/api/visitas/procesar-cola")
-def procesar_cola():
-    """Desactivado (Etapa 1 · T9): se conectará a los generadores en la Etapa 3. No toca la BD."""
-    raise HTTPException(status_code=409, detail=MENSAJE_PROCESAR_COLA_DESACTIVADO)
+@app.post("/api/visitas/procesar-cola", status_code=202)
+def procesar_cola(proyecto_id: Optional[str] = None):
+    """Lanza un trabajo con las visitas 'Sin procesar' y 'En cola' (de una obra o de todas), por fecha."""
+    visitas = procesador_cola.visitas_de_la_cola(proyecto_id)
+    if not visitas:
+        return {"trabajo": None, "mensaje": "No hay visitas Sin procesar ni En cola."}
+    return {"trabajo": _lanzar(visitas, "cola"), "mensaje": f"Trabajo lanzado con {len(visitas)} visitas."}
+
+
+@app.post("/api/visitas/{visita_id}/procesar", status_code=202)
+def procesar_visita(visita_id: str):
+    """Lanza un trabajo para una visita 'Sin procesar', 'En cola' o 'Con dudas'."""
+    return {"trabajo": _lanzar([visita_id], "visita"), "mensaje": "Trabajo lanzado."}
+
+
+@app.get("/api/trabajos/{trabajo_id}")
+def obtener_trabajo(trabajo_id: str):
+    trabajo = procesador_cola.obtener_trabajo(trabajo_id)
+    if trabajo is None:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado.")
+    return trabajo
+
+
+@app.get("/api/trabajos/{trabajo_id}/eventos")
+def eventos_trabajo(trabajo_id: str, desde: int = 0):
+    """Eventos con número mayor que `desde` (la pantalla en vivo pide desde el último que ya tiene)."""
+    if procesador_cola.obtener_trabajo(trabajo_id) is None:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado.")
+    return procesador_cola.listar_eventos(trabajo_id, max(0, desde))
 
 
 app.include_router(router_mesa_dudas)

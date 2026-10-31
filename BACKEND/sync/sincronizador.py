@@ -267,6 +267,25 @@ def estado_tras_cerrar_bloqueantes(conn, visita_id: str, estado_actual: str, ori
         return {}
     decidido = origen.get("estado_mesa") if isinstance(origen.get("estado_mesa"), dict) else {}
     nuevo = decidido.get("estado", ESTADO_SIN_PROCESAR)
+    if nuevo == ESTADO_PROCESADA:
+        # O1 de T4b (antes de T10): el STP que Steven eligió debe seguir en disco al aplicar la decisión.
+        # Si ya no está, la visita sigue 'Con dudas' con una duda `estado` nueva y la decisión se anula.
+        rutas = decidido.get("stp") or []
+        faltan = [Path(r).name for r in rutas if not Path(r).exists()]
+        if faltan or not rutas:
+            fila = conn.execute("SELECT proyecto_id, nombre_carpeta FROM visitas WHERE id = ?",
+                                (visita_id,)).fetchone()
+            conn.execute("""
+                INSERT INTO dudas_y_hallazgos
+                (proyecto_id, visita_id, id_elemento, categoria, campo_afectado, descripcion_pregunta, creado)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (fila["proyecto_id"], visita_id, "", DUDA, CAMPO_ESTADO,
+                  f"Visita '{fila['nombre_carpeta']}': el STP elegido ya no está en INFORMES\\2.DATA PROCESADA "
+                  f"({', '.join(faltan) or 'sin ruta'}); indica de nuevo si alguno corresponde: "
+                  f"{_texto_candidatos([{'rutas': g} for g in origen.get('stp_candidatos', [])])}", _ahora()))
+            origen["estado_mesa_anulado"] = {**decidido, "motivo": "el STP elegido ya no existe", "fecha": _ahora()}
+            origen.pop("estado_mesa", None)
+            return {}
     if decidido:
         origen["estado"] = ORIGEN_ESTADO_MESA
     salida = {"stp": decidido["stp"]} if nuevo == ESTADO_PROCESADA else {}

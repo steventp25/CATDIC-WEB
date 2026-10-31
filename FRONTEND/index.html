@@ -27,14 +27,11 @@
                     <i class="fa-solid fa-sync" :class="{'fa-spin': cargando}"></i>
                     <span>{{ cargando ? 'Sincronizando…' : 'Sincronizar desde Dropbox' }}</span>
                 </button>
-                <!-- Desactivado hasta la Etapa 3 (decisión de Steven): no hace ninguna llamada al backend. -->
-                <div class="flex flex-col items-center">
-                    <button type="button" disabled aria-disabled="true" title="Disponible en la Etapa 3" class="bg-[#29292e] text-gray-500 border border-gray-600 text-sm font-bold px-4 py-2 rounded-lg cursor-not-allowed opacity-70 flex items-center space-x-2">
-                        <i class="fa-solid fa-bolt"></i>
-                        <span>Procesar Cola Visitas</span>
-                    </button>
-                    <span class="text-[10px] text-gray-500 mt-0.5">Disponible en la Etapa 3</span>
-                </div>
+                <!-- Etapa 3 · T10a: lanza el trabajo y muestra su id y su estado al terminar (la pantalla en vivo es T10b) -->
+                <button type="button" @click="procesarCola" :disabled="trabajoCola && trabajoCola.estado === 'corriendo'" data-procesar-cola class="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-60 disabled:cursor-wait text-black text-sm font-bold px-4 py-2 rounded-lg flex items-center space-x-2 transition">
+                    <i class="fa-solid fa-bolt" :class="{'fa-beat': trabajoCola && trabajoCola.estado === 'corriendo'}"></i>
+                    <span>{{ trabajoCola && trabajoCola.estado === 'corriendo' ? 'Procesando…' : 'Procesar Cola Visitas' }}</span>
+                </button>
             </div>
         </header>
 
@@ -43,6 +40,16 @@
             <div v-if="avisoObra" class="bg-green-950 border border-green-700 text-green-200 rounded-xl px-5 py-3 flex justify-between items-start" data-aviso-obra>
                 <p class="text-sm"><i class="fa-solid fa-circle-check text-green-400 mr-2"></i>{{ avisoObra }}</p>
                 <button @click="avisoObra = ''" class="text-green-300 hover:text-white text-sm" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <!-- TRABAJO DEL PROCESADOR DE LA COLA (Etapa 3 · T10a) -->
+            <div v-if="trabajoCola" class="bg-[#1a1a1e] border rounded-xl px-5 py-3 text-sm flex justify-between items-start" :class="trabajoCola.estado === 'terminado' ? 'border-green-700' : (trabajoCola.estado === 'corriendo' ? 'border-yellow-700' : 'border-red-700')" data-trabajo-cola>
+                <div>
+                    <p class="font-bold text-white"><i class="fa-solid fa-bolt text-yellow-400 mr-2"></i>{{ trabajoCola.mensaje }}</p>
+                    <p v-if="trabajoCola.id" class="text-xs text-gray-400 mt-1">Trabajo <span class="font-mono">{{ trabajoCola.id }}</span> · estado: <span class="font-semibold">{{ trabajoCola.estado }}</span><span v-if="trabajoCola.resumen"> · {{ trabajoCola.resumen }}</span></p>
+                    <p v-if="trabajoCola.error" class="text-xs text-red-300 mt-1">{{ trabajoCola.error }}</p>
+                </div>
+                <button v-if="trabajoCola.estado !== 'corriendo'" @click="trabajoCola = null" class="text-gray-400 hover:text-white text-sm" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
             </div>
 
             <!-- RESULTADO DE SUBIR VISITA / CONECTAR CON DROPBOX (Etapa 2 · T4v) -->
@@ -885,6 +892,47 @@
                     }
                 };
 
+                // --- Procesar Cola (Etapa 3 · T10a): solo lanza el trabajo y muestra su id y su estado al terminar ---
+                const trabajoCola = ref(null);
+                const resumirTrabajo = (t) => {
+                    const r = t.resumen || {};
+                    const visitas = (r.visitas || []);
+                    const procesadas = visitas.filter(v => v.estado === 'Procesada').length;
+                    return `${visitas.length} visitas · ${procesadas} procesadas · ${visitas.length - procesadas} con dudas o con error · ${(r.pdf || []).length} PDF`;
+                };
+                const seguirTrabajo = async (id) => {
+                    try {
+                        const res = await fetch(`${API}/api/trabajos/${encodeURIComponent(id)}`);
+                        if (!res.ok) throw new Error(await leerError(res));
+                        const t = await res.json();
+                        if (t.estado === 'corriendo') { setTimeout(() => seguirTrabajo(id), 2000); return; }
+                        trabajoCola.value = { id, estado: t.estado, mensaje: t.estado === 'terminado' ? 'Procesamiento terminado.' : 'El procesamiento falló.',
+                                              resumen: resumirTrabajo(t), error: t.error || '' };
+                        await cargarDatos();
+                        await cargarDudasAbiertas();
+                    } catch (e) {
+                        trabajoCola.value = { id, estado: 'desconocido', mensaje: 'No se pudo leer el estado del trabajo.', error: e.message };
+                    }
+                };
+                const procesarCola = async () => {
+                    if (trabajoCola.value && trabajoCola.value.estado === 'corriendo') return;
+                    try {
+                        let res;
+                        try {
+                            res = await fetch(`${API}/api/visitas/procesar-cola`, { method: 'POST' });
+                        } catch (e) {
+                            throw new Error(`El backend no responde en ${API}. Verifica que el servidor FastAPI esté corriendo.`);
+                        }
+                        if (!res.ok) throw new Error(await leerError(res));
+                        const data = await res.json();
+                        if (!data.trabajo) { trabajoCola.value = { id: '', estado: 'terminado', mensaje: data.mensaje }; return; }
+                        trabajoCola.value = { id: data.trabajo.id, estado: 'corriendo', mensaje: data.mensaje };
+                        seguirTrabajo(data.trabajo.id);
+                    } catch (e) {
+                        trabajoCola.value = { id: '', estado: 'fallido', mensaje: 'No se pudo lanzar el procesamiento.', error: e.message };
+                    }
+                };
+
                 // --- Mesa de Dudas ---
                 const cargarDudasVisita = async () => {
                     if (!mesa.value) return;
@@ -1397,7 +1445,7 @@
                     esPendiente, formatearFecha, formatearFechaHora, parsearJSON, etiquetaCampo, claseEstado, nombreProyecto,
                     dudasAbiertas, bloqueantesAbiertas, candidatosStp, abrirMesa, cerrarMesa, responder, responderEstado,
                     esElementoVisita, fotosDe,
-                    sincronizarDropbox, contarOTs, filtrarOTs,
+                    sincronizarDropbox, contarOTs, filtrarOTs, trabajoCola, procesarCola,
                     planosVigentes, avisoObra, modalObra, modalDatos, gruposDatos,
                     abrirNuevaObra, abrirCambiarPlano, cerrarModalObra, enviarObra, abrirDatosObra, guardarDatos,
                     visor, lienzoVisor, tiposRecuadro, elementoVisor, cajasVisibles, ptAPx, abrirVisor, cargarHoja, zoomVisor, ajustarVisor,
