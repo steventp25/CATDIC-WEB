@@ -613,3 +613,52 @@ Corrección:
 - Siguen vigentes lo de las rayas (enteras) y lo de la fila vacía del bloque "Inspectores".
 - **Pruebas:** `566 passed`, más el fallo ajeno de Dropbox.
 - **Pendiente con Steven:** en el FI-02, ¿la fecha va en la p4 "Inspectores"?
+
+## Evaluación 23 · 31/10/2026 · Planificador (auditoría) · T10a procesador de la cola (rama `claude/etapa3-t10a-procesador-21d1fd`, `32af129`)
+**Veredicto: APROBADO.** Sale de T4v, que todavía no está fusionada; el PR debe ir después del de T4v.
+
+### Bloqueantes
+- Ninguno.
+
+### Observaciones (no bloquean)
+- O1. **`MAPEO_DISENO_A_STP` está vacío a propósito.** Ningún elemento real genera ficha hasta que Steven decida qué dato del plano va en cada fila del STP. Es lo correcto según la Regla de Oro: el procesador no lo deduce.
+- O2. **Ningún módulo llena hoy `medidas_acero_campo_json`** (OBRA). Sin esa captura, ninguna visita puede quedar `Procesada`; el STP sale con " - CON DUDAS". Es una tarea por planificar.
+- O3. **`niveles_de_diseno`** solo empareja escrituras del MISMO sótano (`S-4` ↔ `SOTANO S4`/`SOTANO -4`). Steven tiene que confirmarlo.
+- O4. **El botón "Procesar Cola" no se probó en el navegador**, porque la página apunta a :8000, que es la BD real. T10b rehace esa parte; allí se verifica con un servidor propio.
+- O5. **El FI de partida se lee de Dropbox (solo lectura)** y se escribe en la carpeta de pruebas. Si hay varios FI distintos del mismo nivel y tipo, abre una duda y no elige uno.
+
+### Criterios de aceptación
+- [x] **Trabajo en segundo plano con eventos:**
+  - endpoints 202, 404 y 409 (otro trabajo corriendo, visita no procesable);
+  - los eventos se piden con `desde=N`;
+  - un trabajo huérfano pasa a fallido al arrancar y sus visitas vuelven a su estado;
+  - deja auditoría: `LANZAR_TRABAJO`, `PROCESAR_VISITA`, `PUBLICAR_PDF` y `TERMINAR_TRABAJO`.
+- [x] **Cruce por ID + Nivel + Ejes (§4.2) sin adivinar:**
+  - cero o varios candidatos → duda;
+  - solo el ID vale únicamente si el único candidato es de ejes `—`;
+  - la etiqueta nunca se usa como ID (O4 de la Evaluación 2, con prueba).
+- [x] **Regla de Oro:** cualquier campo del elemento de diseño sin `confirmado`, o con `revisar_motivo`, deja el elemento en espera con su duda (`procesador_cola.py:641`). Lo mismo pasa con los recuadros M3/M4 sin confirmar y con las fotos que faltan en la caché.
+- [x] **Cierre:** la visita queda `Procesada` solo si no hay dudas abiertas, ni elementos excluidos, ni dudas de OBRA, y están todos los formatos pedidos. Si no, queda `Con dudas` con al menos una duda abierta (`_cerrar`).
+- [x] **Una duda no detiene el trabajo:** antes de cerrar se reintentan los elementos cuya duda ya se respondió (`procesador_cola.py:473`).
+- [x] **Salida:** solo en la carpeta de pruebas, con `obtener_ruta_salida_sin_sobrescribir` y `os.rename`, que en Windows no pisa. Si hay dudas, el nombre lleva " - CON DUDAS". El FI no se actualiza si la visita tiene dudas, porque es acumulativo. CATDIC-STP se omite con aviso.
+- [x] **O1:** `estado_tras_cerrar_bloqueantes` comprueba `Path.exists()`. **O1 del lector:** la visita pasa a Con dudas. **O4:** se lee `respuesta_usuario` de forma estricta. **O5:** se reevalúa P3 en solo lectura antes de generar.
+- [?] El botón en el navegador (ver O4).
+
+### Pruebas ejecutadas
+- `pytest -q` en un worktree temporal → **948 passed**.
+- `git merge-tree --write-tree origin/main <rama>` → limpio.
+- Corrida real del Ejecutor sobre una copia (la #18 de Terra):
+  - 31 elementos leídos, ninguno cruzado (31 etiquetas ambiguas);
+  - 1 duda P3 (ya hay un STP de su fecha) y 1 de la cabecera del proyecto;
+  - ningún PDF;
+  - con 10 respuestas simuladas, 10 cruces que se detienen en "diseño sin confirmar";
+  - sha256 de la BD real y listado de Dropbox (1647 archivos) sin cambios.
+  - No la repetí: el resultado depende del mismo lector y de la misma copia que ya auditó la Evaluación 13, y el código del cruce lo revisé línea por línea.
+
+### Decisiones para Steven
+1. De qué dato del plano sale cada fila del STP (`MAPEO_DISENO_A_STP`).
+2. Cómo se capturan los datos de OBRA (medidas de campo).
+3. Si `S-4` de la visita equivale a `SOTANO S4` del plano.
+4. Si se publican PDF " - CON DUDAS" en la carpeta de pruebas y si el FI solo se actualiza con la visita limpia.
+5. El texto de «Nivel a inspeccionar» del FI: `<elementos> <CLASE>`.
+6. Si las visitas Mixta se dejan sin generar y con su duda.

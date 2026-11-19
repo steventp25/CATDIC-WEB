@@ -237,6 +237,20 @@ Consecuencias:
   - **(b) Conectar con Dropbox:** el usuario indica la carpeta de visitas de esa obra en Dropbox. Se valida y se guarda con auditoría, como en D4 de Codex, y se reutiliza el sincronizador de la Etapa 1 sobre esa ruta.
 - En los dos casos, al terminar se ejecuta el lector de visitas de T3 (Etapa 3). Si quedan dudas, se abre la Mesa de Dudas (T5b, respuesta 13 de Steven).
 - **Depende de:** T3, T4 y T5b de la Etapa 3, y de T4n.
+- Estado: APROBADA (Evaluación 13) · rama `claude/etapa2-t4v-visitas-061a18` (1da6332) · push hecho.
+- **Decisiones de Steven (30/10/2026, «Sí, confírmalas»):**
+  1. **Número de visita repetido:** se avisa como hallazgo y no bloquea.
+  2. **Visitas ya Procesadas:** el lector no las vuelve a leer.
+  3. **Carpeta con 2 PDF:** en la Mesa, el usuario elige cuál PDF es la visita. Al elegirlo se audita y se vuelve a correr el lector. **Falta programarlo: T4v-b.**
+  4. **Visitas viejas #1 a #5,** cuyos PDF no tienen forma de visita: quedan como duda.
+  5. **Carpetas que no siguen §5.1:** se rechazan.
+  6. **Al subir una visita,** los elementos y el nivel son obligatorios.
+
+### T4v-b — Elegir el PDF de la visita en la Mesa (decisión 3)
+- Cuando la carpeta de una visita tiene varios PDF, la duda `lector_visita` de la Mesa ofrece la lista de esos PDF, con su nombre y su número de páginas.
+- El usuario elige uno y la elección se guarda en la visita con auditoría. El lector corre sobre ese PDF.
+- Los demás PDF no se borran ni se mueven. En Dropbox no se escribe nada.
+- Criterios: una prueba `# SINTÉTICO` (2 PDF → se elige uno → el lector lo lee → la duda se cierra); prueba real con la #9 de Terra sobre una copia de la BD; suite en verde.
 
 ### T5n — Visor y recuadros
 - El visor muestra el **vectorial**.
@@ -273,11 +287,38 @@ Consecuencias:
 - Comprobaciones cruzadas: el total de barras, las unidades, los rangos de entrepiso expandidos sin adivinar y que no haya ID duplicados en el mismo nivel.
 - **Todo queda `pendiente`.**
 - Los pórticos (elevaciones por tramo, §4.3) quedan para una tarea posterior.
+- Estado: APROBADA (Evaluaciones 8 y 9) · rama `claude/etapa2-t6n-extractor-d699d1` (`9438234` y `6359204`), subida.
+- **Decisiones de Steven (29/10/2026), "todas si":**
+  1. Hay un elemento por cada L# de la planta. Sus valores salen de la fila A/B/C que el usuario le asigna.
+  2. El tipo de elemento sale del rótulo de la tabla.
+  3. La zapata de lindero se llama `ZAPATA MURO LINDERO <fila>`. Su nivel y sus EJES quedan pendientes.
+  4. El f'c de la losa solo se asigna si su E-n cae en un único valor (ver la regla de borde de abajo).
+  5. Las plantas "DE TECHO" repetidas necesitan el dato `techo` del usuario (lo agrega T6n-d en "Datos de la obra").
+  6. Un elemento existente que no viene de T6n no se toca: se abre una duda.
+  7. Una sola duda por causa.
+  8. Como no hay un total impreso, se valida el formato de cada celda y que H = h1 + h2.
+- **Regla de borde de los rangos de f'c** (Steven): «"E3 @ E10" con 350 kg/cm² significa que comienza en e-3 y llega hasta el e-10, el e-10 en este caso queda con la resistencia de 280». Cuando un E-n es el final de un rango y el comienzo del siguiente, toma el f'c **del rango que empieza en él**. No es un choque.
+
+### T6n-d — Ajustes de las decisiones de Steven
+- Ejecutor: sesión nueva · rama desde `claude/etapa2-t6n-extractor-d699d1`.
+- `comprobar_fc` aplica la regla de borde: si dos rangos comparten un extremo y uno termina donde empieza el otro, el E-n toma el valor del rango que empieza en él. Sigue habiendo choque (rojo + duda) cuando dos rangos se solapan en algo más que el borde, o si el mismo E-n está en dos rangos que empiezan en él.
+- "Datos de la obra" (T4n) agrega la lista `techo` (página del vectorial = nivel) para las plantas con título repetido, con el mismo flujo de confirmado + auditoría.
+- Criterios: una prueba sintética de la regla de borde (E3@E10=350 y E10@E16=280 → E-10 = 280, en verde); una prueba de solape real → rojo; la lista `techo` probada en la API y en el navegador; corrida de Terra contra una copia de la BD: `rangos_sin_choque` en verde; suite en verde.
 
 ### T7n — Confirmación
 - **Confirmación por lote** de una tabla completa, con el recorte del plano al lado, cuando las comprobaciones salen en verde.
 - **Uno por uno**, a través de la Mesa de Dudas, cuando hay contradicciones o huecos.
 - Auditoría con el usuario, el lote y los valores.
+
+- Estado: APROBADA (Evaluación 11) · rama `claude/etapa2-t7n-confirmacion-8210cf` (2f850fc) · push hecho.
+
+### T7n-b — Decisiones de Steven sobre la confirmación (30/10/2026: «SI A TODO»)
+1. El **L#→tipo** que Steven da en "Datos de la obra" llega al elemento como `confirmado`. La fuente es el usuario, con referencia a la auditoría de "Datos de la obra".
+2. El **lote confirma también la identidad** del elemento: ID de la fila, nivel impreso, ejes (`—` en losas), hoja y archivo. Cada uno lleva su propia fila de auditoría.
+3. **Celda "AS. ADIC." vacía = "sin acero adicional"**: se escribe el valor de "sin acero" (`ex.SIN_ACERO`), la tabla puede quedar en verde y la duda de celda vacía de esa columna desaparece. Aplica **solo** a AS. ADIC. Cualquier otra celda vacía sigue siendo una duda.
+4. **Notas "PLANO ANTERIOR" / modificación:** el usuario certifica, con auditoría, que la tabla vale para el plano vigente. La comprobación pasa a verde y la duda no se reabre al volver a extraer mientras el sha256 del plano sea el mismo. Si cambia el plano, la certificación se pierde.
+5. **Un solo usuario en la auditoría: "steven"**, en el lote, la Mesa, Datos de la obra y el extractor, a través de una sola función.
+- Criterios: una prueba por decisión; corrida de Terra sobre una copia (cuántas tablas pasan a verde y si el sha256 queda igual); suite en verde.
 
 ### T8n — Prueba completa con Torre P16, cuando Steven suba sus planos.
 

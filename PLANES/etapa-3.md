@@ -546,6 +546,73 @@ Steven las entregó en `G:\My Drive\CATDIC\FORMATO CLAUDE\New folder\`. El códi
 
   Se reactiva el botón.
 
+- **Pantalla "Procesando visita"** (idea de Steven, 30/10/2026). Al procesar una visita se abre una pantalla que:
+  - **muestra el avance en vivo:** elemento por elemento, cuál se está cruzando, cuál quedó listo y cuál tiene duda;
+  - **pregunta mientras corre:** cada duda aparece en el momento en que surge, y no al final en la Mesa;
+  - **da acceso, junto a cada pregunta,** al plano estructural (el visor de T5n, abierto en la hoja y el recuadro del elemento) y a la visita (la página del PDF con su foto y su rótulo);
+  - **guarda cada respuesta** con las mismas reglas de la Mesa de Dudas: validada, con auditoría y sin inventar nada;
+  - **sigue sin esperar:** el proceso continúa con los elementos que no dependen de la duda. Al terminar, si quedan dudas, la visita queda `Con dudas` y lo pendiente sigue en la Mesa;
+  - **permite cerrar la pantalla:** el proceso termina solo y se puede volver a abrir.
+
+#### Partición (30/10/2026, Steven eligió T10)
+**T10a — Procesador (backend), con eventos para la pantalla**
+- `BACKEND/procesador_cola.py`.
+- `POST /api/visitas/{id}/procesar` y `POST /api/visitas/procesar-cola` lanzan un **trabajo** en segundo plano.
+- Cada trabajo:
+  - tiene id y estado;
+  - escribe una lista de eventos que se consulta con `GET /api/trabajos/{id}/eventos?desde=N`: `elemento_inicio`, `elemento_listo`, `duda`, `pdf_generado`, `fin`;
+  - deja auditoría.
+- Por visita:
+  1. Corre el lector T3, si la visita no fue leída.
+  2. Cruza cada `elementos_visita` con `elementos_diseno` por **ID + Nivel + Ejes** (§4.2), sin adivinar:
+     - cero o varios candidatos → `DUDA_BLOQUEANTE`;
+     - un dato de diseño que no está `confirmado` → duda (Regla de Oro: solo se informa con datos confirmados).
+  3. Arma las fichas (Capa 1 + Capa 2 + Capa 3) y llama a los generadores existentes, STP-MIVED (T7/T7b) y FI-01/02/03 (T8/T8b), según `formatos_solicitados`. Pasa las discrepancias y las dudas de los elementos (Evaluación T7, O2) y la clave de nivel completa (`SOTANO -4`, nunca `-4`).
+  4. Pasa el auditor de los 18 errores. Solo si no hay dudas abiertas, ni elementos excluidos, ni dudas de OBRA, la visita queda `Procesada`. Si no, queda `Con dudas`.
+- **Salida:** solo en la carpeta de pruebas (`CATDIC_SALIDA_PRUEBAS`, P3), nunca en Dropbox, sin sobrescribir (v2).
+- **Una duda no detiene el trabajo:** el elemento queda en espera y el trabajo sigue con los demás. Las respuestas llegan por la Mesa (`PATCH /api/dudas/{id}`). Si llega la respuesta de un elemento en espera mientras el trabajo corre, ese elemento se reintenta antes de cerrar.
+- **Recordatorios de evaluaciones anteriores,** que hay que verificar o resolver:
+  - O4: las dudas de elemento se cierran sin aplicar el valor; T10 lee `respuesta_usuario` o no procesa esos elementos;
+  - O5: las visitas #1 a #10 que pasan a `Sin procesar` al responder la fecha: reevaluar P3 antes de regenerar;
+  - O1 (`estado_tras_cerrar_bloqueantes`, `Path.exists()`) y O1 del lector (Sin procesar → Con dudas);
+  - la etiqueta de T5 no se usa como ID.
+- **Se reactiva el botón "Procesar Cola"** del tablero, que solo lanza el trabajo y muestra su id. La pantalla es de T10b.
+
+**T10b — Pantalla "Procesando visita" (frontend)**, sobre los eventos de T10a. Es la idea de Steven descrita arriba. Muestra el visor del plano (T5n) y la página de la visita junto a cada duda.
+
+#### Decisiones de Steven sobre T10a (31/10/2026)
+1. **Filas del STP por tipo:** las define `PLANES/referencia/STP-tipos-de-elementos.md` (documento de Steven). Trae los rótulos y letras de cada tipo y estas reglas:
+   - Top = arriba y Bot = abajo;
+   - en la losa aligerada, Top es la malla del topping y Bot el acero del nervio;
+   - los adicionales de losa se escriben por el eje de cada apoyo (`APOYO EJE A: Ø3/8"@0.15 / APOYO EJE B: …`), y los apoyos sin adicional no se listan;
+   - define la zapata aislada (2.1) y la zapata de muro (2.4), que el STP-MIVED aún no soporta.
+2. **OBRA sin medida = valor del plano.** Si la visita no escribe una medida, la columna OBRA lleva el mismo valor que PLANOS. Esto **reemplaza** la regla anterior ("OBRA vacía + duda", lección 3 del auditor). Para que se pueda rastrear, el origen queda guardado como "sin medida en la visita: valor del plano". No abre duda. Si hay medida, se compara con recubrimiento (§4.5) y solo una diferencia real escribe el valor medido.
+- Las decisiones 3 a 6 de la Evaluación 23 siguen con la propuesta del Planificador, sin confirmar.
+
+#### Lo que el documento no cierra (preguntas para Steven, con propuesta)
+Hoy el lector de planos de Terra solo saca **losas** (columnas `H, Bw1, Bw2, h1, h2, DIR. X, DIR. Y, AS. ADIC.`), **losas aligeradas** (`AsxC, AsxB, AsyC, AsyB, Ht, HB`) y **zapatas de muro** (`B, h, Df, ACERO Ast, ACERO Asl`). Falta saber qué columna del plano va a qué fila:
+- **Q1 · Losa (tabla H…AS. ADIC.):** propuesta: `H` → 1.b; `DIR. X` → 1.i Bot X-X; `DIR. Y` → 1.n Bot Y-Y; `AS. ADIC.` → adicional Top, por apoyo. ¿De dónde sale la malla Top (1.h / 1.m) y en qué dirección van los adicionales?
+- **Q2 · Losa aligerada:** ¿qué significan la C y la B de `AsxC` / `AsxB`? Si C = Top y B = Bot: `AsxC` → 1.h, `AsxB` → 1.i, `AsyC` → 1.m, `AsyB` → 1.n, `Ht` → 1.b.
+- **Q3 · Zapata de muro:** propuesta: `h` → 1.b Espesor; `B` → 1.d Ancho; `ACERO Asl` → 1.i y 1.k; `ACERO Ast` → ¿1.h superior, 1.j inferior o ambas? `Df` no va al STP. 1.c Longitud no está en la tabla y queda pendiente.
+- **Q4 · Calzos (1.e/2.e):** el plano no los trae, así que "OBRA = plano" deja la celda vacía. ¿Se escribe "SI" cuando la visita no dice nada?
+- **Columnas, vigas, pórticos y muros:** el lector aún no los extrae. Hasta que exista esa extracción, quedan con su duda "el plano de este tipo aún no se extrae". Esa extracción es una tarea aparte (T6n-e).
+
+**T10c — Filas del STP desde el plano + OBRA = plano** (generadores + procesador; se arranca con las respuestas Q1–Q4)
+- `procesador_cola.MAPEO_DISENO_A_STP` se llena con las respuestas Q1–Q3, solo para los tipos que el lector extrae. Un tipo sin mapeo mantiene su duda, con un texto que diga qué falta.
+- `generators/stp_mived.py` agrega la zapata aislada (2.1) y la zapata de muro (2.4), con los rótulos y letras exactos del documento (incluido `Longutud Y` *(sic)*) y recubrimiento 0.075.
+- **Regla OBRA (decisión 2):**
+  - sin medida → OBRA = PLANOS, con el origen guardado y sin duda;
+  - con medida → se compara con `medida + 2·rec` y, si es conforme, se escribe el valor del plano;
+  - si no es conforme, el valor medido más una discrepancia.
+  - Se quita `OBRA_EXTRA` como duda.
+  - La conformidad ("CONFORME A PLANOS") sigue exigiendo 0 dudas abiertas y 0 discrepancias.
+- Los adicionales de losa salen por apoyo solo si el plano los da por eje. Si no, quedan pendientes, sin repartir el valor entre los apoyos.
+- **Pruebas:**
+  - por tipo, sintéticas, con la disposición real;
+  - OBRA sin medida (= plano, con origen) y con medida (conforme o con discrepancia);
+  - un tipo sin mapeo mantiene su duda;
+  - una corrida de la #18 de Terra sobre una **copia** de la BD, con los datos confirmados por lote en la copia y el sha256 de la BD real y de Dropbox sin cambios.
+
 ## Paralelismo
 - **Ya mismo:** T1 (backend) y T4 (backend, `main.py`) no comparten archivos y pueden correr a la vez.
   - T4 toca `main.py`. Ninguna otra tarea de 3A lo toca.
