@@ -98,8 +98,9 @@ CAMPOS_OBRA = ("cliente", "supervisor", "no_solicitud", "no_licencia", "resident
                "provincia", "sector", "inicio_obra")
 
 
-def crear_proyecto(datos: Dict, usuario: Optional[str] = None) -> Dict:
-    """Crea la obra con sus datos generales. Los campos vacíos quedan vacíos (el generador los pone pendientes)."""
+def crear_proyecto(datos: Dict, usuario: Optional[str] = None, en_transaccion=None) -> Dict:
+    """Crea la obra con sus datos generales. Los campos vacíos quedan vacíos (el generador los pone pendientes).
+    `en_transaccion(conn, proyecto_id)` corre dentro de la misma transacción (Fundación F2: membresía del creador)."""
     usuario = usuario or _usuario()
     nombre = " ".join(str(datos.get("nombre") or "").split())
     if not nombre:
@@ -126,6 +127,8 @@ def crear_proyecto(datos: Dict, usuario: Optional[str] = None) -> Dict:
             conn.execute(f"INSERT INTO proyectos ({', '.join(columnas)}) VALUES ({', '.join('?' * len(columnas))})",
                          (proyecto_id, nombre, tipo, FORMATO_POR_TIPO[tipo], _ahora(), *valores.values()))
             _auditar(conn, "CREAR_PROYECTO", proyecto_id, {"nombre": nombre, "tipo": tipo, **valores}, usuario)
+            if en_transaccion is not None:
+                en_transaccion(conn, proyecto_id)
             conn.execute("COMMIT")
         except Exception:
             if conn.in_transaction:
@@ -437,6 +440,9 @@ def listar_datos_obra(proyecto_id: str) -> Dict:
 
 class ProyectoNuevo(BaseModel):
     nombre: str
+    # Fundación F2: funciones que recibe en la obra quien la crea (es_admin). Por defecto administrar, preparar y
+    # revisar/autorizar, cada una registrada en la auditoría; nadie puede cambiar después sus propias funciones.
+    funciones_creador: Optional[List[str]] = None
     tipo: Optional[str] = None
     cliente: Optional[str] = None
     supervisor: Optional[str] = None
@@ -466,8 +472,16 @@ def _http(exc: ErrorObra) -> HTTPException:
 
 @router.post("/api/proyectos", status_code=201)
 def api_crear_proyecto(cuerpo: ProyectoNuevo):
+    from identidad import contexto
+    from identidad.rutas import FUNCIONES_CREADOR, asignar_membresia
+    funciones = FUNCIONES_CREADOR if cuerpo.funciones_creador is None else cuerpo.funciones_creador
+
+    def membresia_del_creador(conn, proyecto_id):
+        if funciones:
+            asignar_membresia(conn, proyecto_id, contexto.usuario_id(), funciones, None, motivo="creador de la obra")
     try:
-        return {"proyecto": crear_proyecto(cuerpo.model_dump())}
+        return {"proyecto": crear_proyecto(cuerpo.model_dump(exclude={"funciones_creador"}),
+                                           en_transaccion=membresia_del_creador if contexto.usuario_id() else None)}
     except ErrorObra as exc:
         raise _http(exc)
 

@@ -18,6 +18,7 @@
 import json
 import os
 import re
+import contextvars
 import threading
 import uuid
 from datetime import datetime
@@ -258,7 +259,9 @@ def lanzar_trabajo(visita_ids: List[str], tipo: str = "visita", usuario: Optiona
             conn.commit()
         finally:
             conn.close()
-        hilo = threading.Thread(target=ejecutar_trabajo, args=(trabajo_id,), name=trabajo_id, daemon=True)
+        # Fundación F2: el hilo hereda el usuario de la petición, así sus filas de auditoría llevan su usuario_id
+        hilo = threading.Thread(target=contextvars.copy_context().run, args=(ejecutar_trabajo, trabajo_id),
+                                name=trabajo_id, daemon=True)
         _hilos[trabajo_id] = hilo
     if en_hilo:
         hilo.start()

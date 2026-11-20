@@ -69,6 +69,15 @@ def _plano_vigente(conn, proyecto_id: str):
         raise ErrorObra("La obra no tiene plano vigente: sube primero el vectorial y el sellado.", 409)
     if not Path(fila["vectorial_ruta"]).is_file():
         raise ErrorObra("El archivo del vectorial vigente no está en la carpeta de datos.", 409)
+    # Fundación F2 (H7): solo se sirve un archivo que esté dentro de la carpeta de datos de ESTA obra, aunque la
+    # base diga otra ruta (una fila alterada no puede hacer que el visor lea un archivo cualquiera del disco).
+    try:
+        carpeta_obra = (config.obtener_datos_raiz() / proyecto_id).resolve()
+        dentro = carpeta_obra in Path(fila["vectorial_ruta"]).resolve().parents
+    except (config.CarpetaDatosInvalida, OSError):
+        dentro = False
+    if not dentro:
+        raise ErrorObra("El archivo del vectorial vigente está fuera de la carpeta de datos de la obra.", 409)
     return fila
 
 

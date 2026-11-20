@@ -311,7 +311,10 @@ router = APIRouter()
 @router.get("/api/dudas")
 def api_listar_dudas(proyecto_id: Optional[str] = None, visita_id: Optional[str] = None,
                      resuelta: Optional[bool] = None, categoria: Optional[str] = None, sin_visita: bool = False):
-    return listar_dudas(proyecto_id, visita_id, resuelta, categoria, sin_visita)
+    from identidad.guardia import obras_del_usuario
+    visibles = obras_del_usuario()  # Fundación F2: nunca dudas de obras ajenas
+    return [d for d in listar_dudas(proyecto_id, visita_id, resuelta, categoria, sin_visita)
+            if d["proyecto_id"] in visibles]
 
 
 @router.patch("/api/dudas/{duda_id}")

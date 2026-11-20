@@ -23,7 +23,7 @@ import pymupdf
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from database import get_connection
+from database import get_connection, por_confirmacion
 from importadores.validador_diseno import CONFIRMADO
 from obras import ErrorObra, _ahora, _proyecto, _transaccion, _usuario
 from plano import extractor as ex
@@ -279,7 +279,7 @@ def _confirmar(conn, proyecto_id: str, tabla_id: int, extraido_en: Optional[str]
         estado, fuente = _cargar(e["estado_campos_json"], {}), _cargar(e["fuente_json"], {})
         for c in por_uid.get(uid, []):
             estado[f"datos_diseno.{c['campo']}"] = CONFIRMADO
-            fuente["valores"][c["campo"]]["confirmado"] = {"lote": lote, "por": usuario, "en": ahora}
+            fuente["valores"][c["campo"]]["confirmado"] = {"lote": lote, "por": por_confirmacion(usuario), "en": ahora}
             _auditar_campo(conn, usuario, ahora, uid, {"lote": lote, "tabla_id": tabla_id, "tabla": t["clave"],
                                                          "id_elemento": c["id_elemento"], "nivel_rango": c["nivel_rango"],
                                                          "ejes": c["ejes"], "campo": c["campo"], "valor": c["valor"],
@@ -289,7 +289,7 @@ def _confirmar(conn, proyecto_id: str, tabla_id: int, extraido_en: Optional[str]
             # T7n-b (decisión 2): la identidad del elemento, campo por campo
             estado[c["campo"]] = CONFIRMADO
             fuente.setdefault("identidad", {})[c["campo"]] = {"valor": c["valor"], **c["fuente"],
-                                                              "confirmado": {"lote": lote, "por": usuario, "en": ahora}}
+                                                              "confirmado": {"lote": lote, "por": por_confirmacion(usuario), "en": ahora}}
             _auditar_campo(conn, usuario, ahora, uid, {"lote": lote, "tabla_id": tabla_id, "tabla": t["clave"],
                                                          "id_elemento": c["id_elemento"], "nivel_rango": c["nivel_rango"],
                                                          "ejes": c["ejes"], "campo": c["campo"], "valor": c["valor"],
@@ -505,7 +505,7 @@ def aplicar_respuesta(conn, duda, respuesta: str, usuario: str) -> Optional[Dict
         raise ValorInvalido(f"{campo} de {e['id_elemento']} ya está confirmado como '{anterior}': no se sobrescribe.")
     ahora = _ahora()
     plano_fuente = (fuente.get("valores") or {}).get(campo)
-    nueva = {"origen": "usuario", "via": "mesa_dudas", "duda_id": duda["id"], "por": usuario, "en": ahora,
+    nueva = {"origen": "usuario", "via": "mesa_dudas", "duda_id": duda["id"], "por": por_confirmacion(usuario), "en": ahora,
              "valor_propuesto": anterior, "fuente_plano": plano_fuente}
     datos[campo] = valor
     estado[f"datos_diseno.{campo}"] = CONFIRMADO

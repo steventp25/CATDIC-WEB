@@ -711,7 +711,24 @@
 
     <script>
         const { createApp, ref, computed, onMounted, nextTick } = Vue;
-        const API = 'http://localhost:8000';
+        // Fundación F2: la API sale del mismo servidor que esta página (misma dirección: la cookie de sesión es
+        // SameSite=Strict y el servidor exige que el Origin sea él mismo). Si se abre como archivo, la de siempre.
+        const API = location.protocol.startsWith('http') ? '' : 'http://localhost:8000';
+        // Toda petición a la API lleva la sesión; las que cambian algo, además, el encabezado propio que exige el
+        // servidor contra peticiones de otras páginas. Sin sesión (401) se va a la página de entrada.
+        (function () {
+            const fetchOriginal = window.fetch.bind(window);
+            window.fetch = async function (recurso, opciones = {}) {
+                const metodo = (opciones.method || 'GET').toUpperCase();
+                const cabeceras = new Headers(opciones.headers || {});
+                if (!['GET', 'HEAD', 'OPTIONS'].includes(metodo)) cabeceras.set('X-CATDIC-Peticion', '1');
+                const res = await fetchOriginal(recurso, { ...opciones, headers: cabeceras, credentials: 'same-origin' });
+                if (res.status === 401 && String(recurso).includes('/api/')) {
+                    location.href = '/entrar.html?volver=' + encodeURIComponent(location.pathname + location.hash);
+                }
+                return res;
+            };
+        })();
         const PENDIENTE = 'pendiente de verificar';
 
         createApp({

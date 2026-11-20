@@ -1,17 +1,19 @@
 # backend/main.py
-import getpass
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import procesador_cola
-from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic
+from database import get_connection, inicializar_bd, sembrar_datos_iniciales_catdic, usuario_auditoria
+from identidad.guardia import guardia, obras_del_usuario
+from identidad.permisos import PREPARAR
+from identidad.rutas import router as router_identidad
+from pedidos import router as router_pedidos
 from mesa_dudas import router as router_mesa_dudas
 from obras import planos_vigentes, router as router_obras
 from plano.confirmacion import router as router_confirmacion
@@ -22,16 +24,10 @@ from sync.sincronizador import ProyectoNoEncontrado, sincronizar
 
 RUTA_FRONTEND = Path(__file__).resolve().parent.parent / "FRONTEND"
 
-app = FastAPI(title="CATDIC Web API", version="2.0.0")
-
-# Permitir conexiones locales desde el frontend abierto directamente durante la transición.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Fundación F2: la guardia (sesión + permiso por obra) corre en TODA ruta de la API (identidad/guardia.py).
+# Sin CORS: la interfaz y la API salen del mismo servidor local, así que otras páginas no pueden usar la sesión.
+# Esto no sustituye a la autenticación ni a los permisos, que se comprueban en cada ruta (contrato §1, rev. 2).
+app = FastAPI(title="CATDIC Web API", version="2.0.0", dependencies=[Depends(guardia)])
 
 
 @app.on_event("startup")
@@ -49,6 +45,7 @@ class ProyectoUpdate(BaseModel):
     avance_obra: Optional[int] = None
     estado_informe: Optional[str] = None
     avance_informe: Optional[int] = None
+    version: Optional[int] = None  # Fundación F2: si viene y otro cambió la obra antes, 409
     fecha_comprometida: Optional[str] = None
     prioridad: Optional[str] = None
     observaciones: Optional[str] = None
@@ -65,11 +62,14 @@ class ProyectoUpdate(BaseModel):
 # --- ENDPOINTS API ---
 @app.get("/api/dashboard")
 def obtener_dashboard():
+    visibles = obras_del_usuario()  # Fundación F2: solo las obras del usuario; las ajenas no aparecen
     conn = get_connection()
 
-    proyectos = [dict(row) for row in conn.execute("SELECT * FROM proyectos").fetchall()]
-    visitas = [dict(row) for row in conn.execute("SELECT * FROM visitas ORDER BY fecha_visita ASC").fetchall()]
-    ot = [dict(row) for row in conn.execute("SELECT * FROM ordenes_trabajo").fetchall()]
+    proyectos = [dict(row) for row in conn.execute("SELECT * FROM proyectos").fetchall() if row["id"] in visibles]
+    visitas = [dict(row) for row in conn.execute("SELECT * FROM visitas ORDER BY fecha_visita ASC").fetchall()
+               if row["proyecto_id"] in visibles]
+    ot = [dict(row) for row in conn.execute("SELECT * FROM ordenes_trabajo").fetchall()
+          if row["proyecto_id"] in visibles]
 
     total_proyectos = len(proyectos)
     ordenes_abiertas = len([o for o in ot if o["estado"] != "Entregada"])
@@ -90,13 +90,15 @@ def obtener_dashboard():
         "proyectos": proyectos,
         "visitas": visitas,
         "ordenes": ot,
-        "planos_vigentes": planos_vigentes(),   # Etapa 2 · T4n: resumen del plano vigente de cada obra
+        # Etapa 2 · T4n: resumen del plano vigente de cada obra (F2: solo las visibles)
+        "planos_vigentes": {k: v for k, v in planos_vigentes().items() if k in visibles},
     }
 
 
 @app.patch("/api/proyectos/{proyecto_id}")
 def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
     cambios = data.model_dump(exclude_unset=True)
+    version = cambios.pop("version", None)
     if not cambios:
         raise HTTPException(status_code=400, detail="No hay campos para actualizar.")
 
@@ -109,14 +111,17 @@ def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
         if anterior is None:
             conn.execute("ROLLBACK")
             raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+        if version is not None and version != anterior["version"]:
+            conn.execute("ROLLBACK")
+            raise HTTPException(status_code=409, detail="Otra persona cambió esta obra antes; recarga y vuelve a intentarlo.")
         campos = ", ".join(f"{k} = ?" for k in cambios)
-        conn.execute(f"UPDATE proyectos SET {campos}, actualizado = CURRENT_TIMESTAMP WHERE id = ?",
-                     (*cambios.values(), proyecto_id))
+        conn.execute(f"UPDATE proyectos SET {campos}, version = COALESCE(version, 1) + 1, "
+                     f"actualizado = CURRENT_TIMESTAMP WHERE id = ?", (*cambios.values(), proyecto_id))
         detalle = {k: {"anterior": anterior[k], "nuevo": v} for k, v in cambios.items()}
         conn.execute("""
             INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (datetime.now().isoformat(), getpass.getuser(), "PROYECTOS", "ACTUALIZAR_PROYECTO",
+        """, (datetime.now().isoformat(), usuario_auditoria(), "PROYECTOS", "ACTUALIZAR_PROYECTO",
               proyecto_id, json.dumps(detalle, ensure_ascii=False)))
         conn.execute("COMMIT")
     except HTTPException:
@@ -135,7 +140,13 @@ def actualizar_proyecto(proyecto_id: str, data: ProyectoUpdate):
 def sincronizar_dropbox(proyecto_id: Optional[str] = None):
     """Lee Dropbox (solo lectura) y sincroniza la cola de visitas (Etapa 1 · T5)."""
     try:
-        return sincronizar(proyecto_id)
+        if proyecto_id is not None:
+            return sincronizar(proyecto_id)   # la guardia ya comprobó 'preparar' en esa obra
+        # Sin obra: solo las obras donde el usuario puede preparar (Fundación F2)
+        resumenes = []
+        for pid in sorted(obras_del_usuario(PREPARAR)):
+            resumenes.extend(sincronizar(pid)["proyectos"])
+        return {"status": "ok", "proyectos": resumenes}
     except ProyectoNoEncontrado:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
 
@@ -143,7 +154,7 @@ def sincronizar_dropbox(proyecto_id: Optional[str] = None):
 # --- Etapa 3 · T10a: procesador de la cola (trabajo en segundo plano con eventos para la pantalla en vivo) ---
 def _lanzar(visita_ids, tipo: str):
     try:
-        return procesador_cola.lanzar_trabajo(visita_ids, tipo)
+        return procesador_cola.lanzar_trabajo(visita_ids, tipo, usuario=usuario_auditoria())
     except procesador_cola.TrabajoEnCurso as e:
         raise HTTPException(status_code=409, detail=str(e))
     except procesador_cola.VisitaNoProcesable as e:
@@ -156,6 +167,14 @@ def _lanzar(visita_ids, tipo: str):
 def procesar_cola(proyecto_id: Optional[str] = None):
     """Lanza un trabajo con las visitas 'Sin procesar' y 'En cola' (de una obra o de todas), por fecha."""
     visitas = procesador_cola.visitas_de_la_cola(proyecto_id)
+    if proyecto_id is None:  # Fundación F2: sin obra, solo las visitas de las obras donde el usuario puede preparar
+        permitidas = obras_del_usuario(PREPARAR)
+        conn = get_connection()
+        try:
+            obra_de = {f["id"]: f["proyecto_id"] for f in conn.execute("SELECT id, proyecto_id FROM visitas")}
+        finally:
+            conn.close()
+        visitas = [v for v in visitas if obra_de.get(v) in permitidas]
     if not visitas:
         return {"trabajo": None, "mensaje": "No hay visitas Sin procesar ni En cola."}
     return {"trabajo": _lanzar(visitas, "cola"), "mensaje": f"Trabajo lanzado con {len(visitas)} visitas."}
@@ -183,6 +202,8 @@ def eventos_trabajo(trabajo_id: str, desde: int = 0):
     return procesador_cola.listar_eventos(trabajo_id, max(0, desde))
 
 
+app.include_router(router_identidad)  # Fundación F2: sesión, usuarios, obras autorizadas y membresías
+app.include_router(router_pedidos)    # Fundación F2: pedidos con control de versión (409)
 app.include_router(router_mesa_dudas)
 app.include_router(router_obras)  # Etapa 2 · T4n: crear obra, planos y datos del usuario
 app.include_router(router_visor)  # Etapa 2 · T5n: visor del vectorial y recuadros

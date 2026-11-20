@@ -5,6 +5,8 @@ from datetime import datetime, date
 from pathlib import Path
 
 import config
+import migracion_fundacion
+from identidad import contexto
 from reglas_ingenieria import PENDIENTE
 
 # Esquema vigente de la cola de visitas (Etapa 1 · T2). Fuente única: lo usan la creación
@@ -44,19 +46,65 @@ COLUMNAS_NUEVAS_VISITAS = ("clase_detalle_json", "archivos_json", "campos_pendie
 # Etapa 1 · T8: columna añadida con ALTER TABLE (no destructiva, sin reconstruir la tabla)
 COLUMNA_ORIGEN_VISITAS = "origen_datos_json"
 
-USUARIO_AUDITORIA = "steven"  # T7n-b (decisión 5 de Steven): un solo usuario en la auditoría
+USUARIO_AUDITORIA = "steven"  # T7n-b: usuario de las filas escritas FUERA de una petición autenticada (scripts)
+
+# Fundación F2 · escenario 11: espera explícita ante una base ocupada por otro escritor (antes, 5 s implícitos de
+# sqlite3.connect). El valor sale de las mediciones de PLANES/fundacion-f2-informe.md §4: con 8 escritores a la vez
+# la espera más larga fue 4,8 s (diario 'delete') y con 0,1 s fallaba ~8 % de las escrituras; 15 s deja margen ×3.
+# Se mantiene el diario 'delete' (no WAL) mientras la base esté dentro de OneDrive: ver el informe.
+ESPERA_BD_SEGUNDOS = 15.0
 
 
 def usuario_auditoria() -> str:
-    """Usuario de las filas nuevas de `auditoria` (lote, Mesa, Datos de la obra y extractor). Las viejas no se tocan."""
-    return USUARIO_AUDITORIA
+    """
+    Usuario de las filas nuevas (texto). Dentro de una petición es el usuario autenticado (Fundación F2); fuera de
+    ella (scripts locales, arranque) sigue siendo 'steven'. Las filas viejas no se tocan.
+    """
+    return contexto.login() or USUARIO_AUDITORIA
+
+
+def por_confirmacion(usuario: str):
+    """`por` de fuente_json.valores.<campo>.confirmado (contrato §2): el usuario_id real si hay sesión."""
+    uid = contexto.usuario_id()
+    return uid if uid is not None else usuario
+
+
+# Disparadores TEMPORALES (viven solo en la conexión, no se guardan en el archivo): copian el usuario autenticado
+# de la petición en las filas nuevas, dentro de la misma transacción que las escribe. Así ninguna de las ~25
+# inserciones en `auditoria` puede olvidarse de la identidad, y otra herramienta que abra la base no los ve.
+_DISPARADORES_IDENTIDAD = (
+    """CREATE TEMP TRIGGER IF NOT EXISTS catdic_auditoria_usuario AFTER INSERT ON main.auditoria
+       WHEN NEW.usuario_id IS NULL AND catdic_usuario_id() IS NOT NULL
+       BEGIN UPDATE auditoria SET usuario_id = catdic_usuario_id(), usuario = catdic_usuario_login()
+             WHERE id = NEW.id; END""",
+    """CREATE TEMP TRIGGER IF NOT EXISTS catdic_trabajos_usuario AFTER INSERT ON main.trabajos
+       WHEN NEW.usuario_id IS NULL AND catdic_usuario_id() IS NOT NULL
+       BEGIN UPDATE trabajos SET usuario_id = catdic_usuario_id(), usuario = catdic_usuario_login()
+             WHERE id = NEW.id; END""",
+    """CREATE TEMP TRIGGER IF NOT EXISTS catdic_dudas_autor AFTER INSERT ON main.dudas_y_hallazgos
+       WHEN NEW.autor_id IS NULL AND catdic_usuario_id() IS NOT NULL
+       BEGIN UPDATE dudas_y_hallazgos SET autor_id = catdic_usuario_id() WHERE id = NEW.id; END""",
+)
+
+
+def _instalar_identidad(conn) -> None:
+    conn.create_function("catdic_usuario_id", 0, contexto.usuario_id)
+    conn.create_function("catdic_usuario_login", 0, contexto.login)
+    if contexto.actual() is None or contexto.usuario_id() is None:
+        return  # sin usuario autenticado no hay nada que copiar
+    for sql in _DISPARADORES_IDENTIDAD:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # base sin migrar todavía (falta la tabla o la columna): no hay dónde copiarlo
 
 
 def get_connection():
     # La ruta se resuelve en cada llamada (config / CATDIC_DB_PATH) para poder probar con BD temporal
-    conn = sqlite3.connect(config.obtener_db_path())
+    conn = sqlite3.connect(config.obtener_db_path(), timeout=ESPERA_BD_SEGUNDOS)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    _instalar_identidad(conn)
     return conn
 
 def inicializar_bd():
@@ -312,6 +360,7 @@ def inicializar_bd():
     migrar_elementos_diseno()
     migrar_proyectos_cabecera()
     migrar_columnas_t4n()
+    migracion_fundacion.migrar_fundacion_f2()  # Fundación F2: identidad, membresías, servicios y pedidos
 
 # ---------- Migración de 'visitas' (Etapa 1 · T2) ----------
 
@@ -622,7 +671,8 @@ def migrar_columnas_t4n() -> dict:
     finally:
         conn.close()
 
-def registrar_auditoria(modulo: str, accion: str, entidad_id: str, detalle: dict, usuario: str = USUARIO_AUDITORIA):
+def registrar_auditoria(modulo: str, accion: str, entidad_id: str, detalle: dict, usuario: str = None):
+    usuario = usuario or usuario_auditoria()
     conn = get_connection()
     conn.execute("""
         INSERT INTO auditoria (fecha_hora, usuario, modulo, accion, entidad_id, detalle_json)
