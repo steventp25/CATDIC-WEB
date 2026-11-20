@@ -1,5 +1,7 @@
 \# CLAUDE.md — Especificación Maestra del Sistema Web Local CATDIC 2.0
 
+> **Ajuste de alcance de Steven (19/11/2026):** antes de planificar o retomar etapas, leer [PLANES/alcance-catdic-web-2026-11-19.md](PLANES/alcance-catdic-web-2026-11-19.md). Registra el traslado del proceso de informes que Claude ya realiza, IA para interpretar planos, Report and Run y alternativas de operación con Claude Pro. Distingue decisiones y propuestas; no reanuda fases ni aprueba despliegues, gasto o eliminación de código. Las reglas de ingeniería de este archivo siguen vigentes.
+
 
 
 > \*\*ROL DE CLAUDE CODE:\*\* Eres co-desarrollador de `CATDIC-WEB` junto con Codex (ver `COLABORACION.md`).

@@ -2,6 +2,12 @@
 
 Esta carpeta guarda los planes y evaluaciones de cada etapa. Es el registro que comparten el planificador, los ejecutores, el evaluador interno y la revisión cruzada entre Claude Code y Codex (ver `../COLABORACION.md`).
 
+## Ajuste de alcance vigente para la próxima planificación
+
+Plan operativo propuesto: [Fundación inicial de CATDIC-WEB](fundacion-inicial.md). Consolida las respuestas de Steven de la entrevista 1–24 y define fases, dependencias, pruebas y puertas de revisión para Claude. Distingue la fundación del posterior recorrido completo de informes; no declara aprobada ni iniciada su implementación.
+
+Leer primero [CATDIC-WEB: ajustes de alcance y traspaso a Claude (19/11/2026)](alcance-catdic-web-2026-11-19.md): plataforma modular para el equipo, traslado del proceso de informes que Claude ya realiza, IA para interpretar planos, visitas de Report and Run y alternativas de IA sin consumir el cupo de desarrollo. Distingue decisiones confirmadas, propuestas y funciones existentes; no reanuda fases ni aprueba una implementación. Coordinarlo con el [PR 31](https://github.com/steventp25/CATDIC-WEB/pull/31) y el [issue 32](https://github.com/steventp25/CATDIC-WEB/issues/32).
+
 ## Ciclo por etapa
 
 | Paso | Comando | Rol | Resultado |
